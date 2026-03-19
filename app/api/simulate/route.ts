@@ -142,7 +142,10 @@ function sendHttpRequest(
     ];
 
     for (const [k, v] of Object.entries(headers)) {
-      if (k.toLowerCase() !== "host") lines.push(`${k}: ${v}`);
+      const lk = k.toLowerCase();
+      if (lk === "host") continue;
+      if (lk === "content-type" && body) continue;
+      lines.push(`${k}: ${v}`);
     }
 
     if (body) {
