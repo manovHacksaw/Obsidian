@@ -1,6 +1,5 @@
 import Link from "next/link";
 import { Spotlight } from "@/components/ui/spotlight";
-import { BentoGrid, BentoCard } from "@/components/ui/bento-grid";
 
 export default function LandingPage() {
   return (
