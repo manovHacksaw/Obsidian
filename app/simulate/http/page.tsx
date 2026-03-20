@@ -1042,6 +1042,7 @@ export default function HttpSimulatePage() {
 
       <TopBar
         appMode={appMode}
+        pollMode={pollMode}
         viewMode={viewMode}
         serverRunning={serverRunning}
         onSetAppMode={setAppMode}

@@ -2,7 +2,8 @@
 
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
-import type { AppMode, ProtocolMode, ViewMode } from "../types";
+import { useRouter } from "next/navigation";
+import type { AppMode, PollMode, ProtocolMode, ViewMode } from "../types";
 
 interface ProgressionItem {
   id: ProtocolMode;
@@ -13,7 +14,7 @@ interface ProgressionItem {
 const ITEMS: ProgressionItem[] = [
   { id: "http",       label: "HTTP",       available: true  },
   { id: "polling",    label: "Polling",    available: true  },
-  { id: "long-poll",  label: "Long Poll",  available: false },
+  { id: "long-poll",  label: "Long Poll",  available: true  },
   { id: "websocket",  label: "WebSocket",  available: false },
   { id: "heartbeat",  label: "Heartbeat",  available: false },
 ];
@@ -25,6 +26,7 @@ function toProtocolMode(appMode: AppMode): ProtocolMode {
 
 interface TopBarProps {
   appMode: AppMode;
+  pollMode?: PollMode;
   viewMode: ViewMode;
   serverRunning: boolean;
   onSetAppMode: (m: AppMode) => void;
@@ -35,6 +37,7 @@ interface TopBarProps {
 
 export function TopBar({
   appMode,
+  pollMode,
   viewMode,
   serverRunning,
   onSetAppMode,
@@ -42,8 +45,9 @@ export function TopBar({
   onReset,
   onNavigateProtocol,
 }: TopBarProps) {
+  const router    = useRouter();
   const isPolling = appMode === "polling";
-  const current = toProtocolMode(appMode);
+  const current   = toProtocolMode(appMode);
 
   // ── Visited state (localStorage) ──
   const [visited, setVisited] = useState<Set<ProtocolMode>>(() => {
@@ -101,7 +105,11 @@ export function TopBar({
 
               {/* Node */}
               <button
-                onClick={() => isClickable && onNavigateProtocol(item.id)}
+                onClick={() => {
+                  if (!isClickable) return;
+                  if (item.id === "long-poll") { router.push("/simulate/long-poll"); return; }
+                  onNavigateProtocol(item.id);
+                }}
                 disabled={!isClickable}
                 className={`flex items-center gap-1.5 px-2 py-1 rounded-sm transition-all duration-200 ${
                   isClickable ? "cursor-pointer hover:opacity-100" : "cursor-default"
@@ -152,18 +160,22 @@ export function TopBar({
         <div className="flex items-center gap-1.5">
           <span
             className={`w-1.5 h-1.5 rounded-full ${
-              isPolling          ? "bg-blue-400"   :
-              appMode === "real" ? "bg-[#ff8f6f]"  :
-              serverRunning      ? "bg-green-400"   : "bg-red-500"
+              isPolling && pollMode === "real" ? "bg-[#ff8f6f]"  :
+              isPolling                        ? "bg-blue-400"   :
+              appMode === "real"               ? "bg-[#ff8f6f]"  :
+              serverRunning                    ? "bg-green-400"  : "bg-red-500"
             }`}
             style={
-              isPolling          ? { boxShadow: "0 0 6px rgba(96,165,250,0.5)"   } :
-              appMode === "real" ? { boxShadow: "0 0 6px rgba(255,143,111,0.5)" } :
-              serverRunning      ? { boxShadow: "0 0 6px rgba(74,222,128,0.5)"  } : {}
+              (isPolling && pollMode === "real") || appMode === "real" ? { boxShadow: "0 0 6px rgba(255,143,111,0.5)" } :
+              isPolling                                                 ? { boxShadow: "0 0 6px rgba(96,165,250,0.5)"  } :
+              serverRunning                                             ? { boxShadow: "0 0 6px rgba(74,222,128,0.5)"  } : {}
             }
           />
           <span className="text-[10px] font-body uppercase tracking-[0.2em] text-[#777575]">
-            {isPolling ? "Simulated" : appMode === "real" ? "Real Network" : serverRunning ? "Server Running" : "Server Offline"}
+            {isPolling && pollMode === "real" ? "Real Network" :
+             isPolling                        ? "Simulated"    :
+             appMode === "real"               ? "Real Network" :
+             serverRunning                    ? "Server Running" : "Server Offline"}
           </span>
         </div>
       </div>

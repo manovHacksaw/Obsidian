@@ -29,6 +29,7 @@ export interface SimSession {
   responseChunks?: Buffer[];
   firstByteAt?: number;
   responseFinished?: boolean;
+  responseFinishedAt?: number;
   requestSentAt?: number;
   requestRaw?: string;
   // Expiry timer

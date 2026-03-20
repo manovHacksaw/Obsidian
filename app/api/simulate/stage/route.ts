@@ -14,6 +14,47 @@ import {
 
 export const runtime = "nodejs";
 
+// ── Security helpers ───────────────────────────────────────────
+
+/** Reject private/loopback/link-local/metadata IPv4 and IPv6 addresses. */
+function isBlockedIp(ip: string): boolean {
+  const v4 = ip.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4) {
+    const [, a, b, c] = v4.map(Number);
+    return (
+      a === 0 ||                                        // 0.0.0.0/8
+      a === 10 ||                                       // 10.0.0.0/8
+      a === 127 ||                                      // 127.0.0.0/8 loopback
+      (a === 100 && b >= 64 && b <= 127) ||             // 100.64.0.0/10 shared
+      (a === 169 && b === 254) ||                       // 169.254.x.x link-local / metadata
+      (a === 172 && b >= 16 && b <= 31) ||              // 172.16.0.0/12
+      (a === 192 && b === 0 && c === 2) ||              // 192.0.2.0/24 TEST-NET-1
+      (a === 192 && b === 168) ||                       // 192.168.0.0/16
+      (a === 198 && (b === 18 || b === 19)) ||          // 198.18.0.0/15 benchmarking
+      (a === 198 && b === 51 && c === 100) ||           // 198.51.100.0/24 TEST-NET-2
+      (a === 203 && b === 0 && c === 113) ||            // 203.0.113.0/24 TEST-NET-3
+      a >= 224                                          // 224.0.0.0/4 multicast + reserved
+    );
+  }
+  const lower = ip.toLowerCase();
+  return (
+    lower === "::1" ||
+    lower === "::" ||
+    lower.startsWith("fe80:") ||                        // link-local
+    lower.startsWith("fc") ||                           // ULA
+    lower.startsWith("fd") ||                           // ULA
+    lower.startsWith("ff")                              // multicast
+  );
+}
+
+/** RFC 7230 token: visible ASCII except delimiters. Rejects CR/LF and separators. */
+const TOKEN_RE = /^[!#$%&'*+\-.0-9A-Z^_`a-z|~]+$/;
+
+/** Header values must not contain bare CR or LF (HTTP response-splitting). */
+function isHeaderValueSafe(v: string): boolean {
+  return !/[\r\n]/.test(v);
+}
+
 // ── Helpers ────────────────────────────────────────────────────
 
 function resolveDns(hostname: string): Promise<string> {
@@ -30,10 +71,13 @@ function resolveDns(hostname: string): Promise<string> {
 
 function tcpConnect(ip: string, port: number): Promise<net.Socket> {
   return new Promise((resolve, reject) => {
-    const socket = net.createConnection({ host: ip, port, timeout: 10000 });
-    socket.once("connect", () => resolve(socket));
-    socket.once("timeout", () => { socket.destroy(); reject(new Error("TCP connection timed out")); });
-    socket.once("error", (err) => reject(new Error(`TCP error: ${err.message}`)));
+    const socket = net.createConnection({ host: ip, port });
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(new Error("TCP connection timed out"));
+    }, 10_000);
+    socket.once("connect", () => { clearTimeout(timer); resolve(socket); });
+    socket.once("error",   (err) => { clearTimeout(timer); reject(new Error(`TCP error: ${err.message}`)); });
   });
 }
 
@@ -97,6 +141,10 @@ export async function POST(req: NextRequest) {
     try { parsed = new URL(url); }
     catch { return json({ error: `Invalid URL: ${url}` }, 400); }
 
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return json({ error: "Only http and https URLs are supported" }, 400);
+    }
+
     const isHttps  = parsed.protocol === "https:";
     const hostname = parsed.hostname;
     const port     = parsed.port ? parseInt(parsed.port, 10) : isHttps ? 443 : 80;
@@ -113,6 +161,11 @@ export async function POST(req: NextRequest) {
     catch (err) {
       destroySession(sessionId);
       return json({ error: (err as Error).message, stage: "dns" }, 200);
+    }
+
+    if (isBlockedIp(ip)) {
+      destroySession(sessionId);
+      return json({ error: "Target resolves to a private or reserved IP address" }, 400);
     }
     const duration = Math.round(performance.now() - t0);
     session.ip = ip;
@@ -196,6 +249,15 @@ export async function POST(req: NextRequest) {
     }
 
     const { method = "GET", headers = {}, body: reqBody = "" } = body;
+
+    if (!TOKEN_RE.test(method)) {
+      return json({ error: `Invalid HTTP method: ${method}` }, 400);
+    }
+    for (const [k, v] of Object.entries(headers)) {
+      if (!TOKEN_RE.test(k)) return json({ error: `Invalid header name: ${k}` }, 400);
+      if (!isHeaderValueSafe(v)) return json({ error: `Header value for "${k}" contains illegal characters` }, 400);
+    }
+
     // Reconstruct path from the original url stored via dns stage
     // We need the full URL to extract the path — re-passed by client
     const { url } = body;
@@ -245,10 +307,12 @@ export async function POST(req: NextRequest) {
 
     session.socket.on("end", () => {
       session.responseFinished = true;
+      session.responseFinishedAt = performance.now();
     });
 
     session.socket.on("error", () => {
       session.responseFinished = true;
+      session.responseFinishedAt = performance.now();
     });
 
     const t0 = performance.now();
@@ -314,7 +378,11 @@ export async function POST(req: NextRequest) {
       check();
     });
 
-    const t0 = performance.now();
+    if (!session.responseFinished) {
+      destroySession(sessionId);
+      return json({ error: "Response download timed out after 30s", stage: "response" }, 200);
+    }
+
     const raw = Buffer.concat(session.responseChunks).toString("utf8");
     const downloadBytes = Buffer.byteLength(raw, "utf8");
 
@@ -351,8 +419,10 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const responseBody  = decodedBody.slice(0, 10240);
-    const duration = Math.round(performance.now() - t0);
+    const responseBody = decodedBody.slice(0, 10240);
+    const duration = session.responseFinishedAt !== undefined && session.firstByteAt !== undefined
+      ? Math.max(0, Math.round(session.responseFinishedAt - session.firstByteAt))
+      : 0;
 
     // Session is complete — clean up
     destroySession(sessionId);
