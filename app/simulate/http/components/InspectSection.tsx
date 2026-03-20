@@ -2,17 +2,33 @@
 
 import React from "react";
 
+function deriveGradientColor(borderColor: string): string {
+  const parts = borderColor.split(/\s+/).filter(Boolean);
+  const borderToken = parts.find((token) => /^border(?:-[lrtbxy])?-/.test(token));
+  if (!borderToken) return "from-white/20";
+
+  const m = borderToken.match(/^border(?:-[lrtbxy])?-(.+?)(?:\/(\d+))?$/);
+  if (!m) return "from-white/20";
+
+  const color = m[1];
+  const opacity = m[2] ? Math.min(100, Math.max(0, Number(m[2]) + 10)) : 30;
+  return `from-${color}/${opacity}`;
+}
+
 export function InspectSection({
-  step, label, icon, duration, color, borderColor, children,
+  step, label, icon, duration, color, borderColor, gradientColor, children,
 }: {
   step: string; label: string; icon: string;
   duration: number; color: string; borderColor: string;
+  gradientColor?: string;
   children: React.ReactNode;
 }) {
+  const fromClass = gradientColor ?? deriveGradientColor(borderColor);
+
   return (
     <div className="relative pl-14 pb-10">
       {/* Vertical timeline line */}
-      <div className={`absolute left-[17px] top-9 bottom-0 w-px bg-gradient-to-b ${borderColor.replace("border-", "from-").replace("/20", "/30")} to-transparent`} />
+      <div className={`absolute left-[17px] top-9 bottom-0 w-px bg-gradient-to-b ${fromClass} to-transparent`} />
 
       {/* Icon box — absolutely positioned, perfectly centered on the line */}
       <div className={`absolute left-0 top-0 w-9 h-9 rounded-sm bg-[#111] border ${borderColor} flex items-center justify-center`}>

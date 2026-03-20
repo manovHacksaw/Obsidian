@@ -229,6 +229,14 @@ export async function POST(req: NextRequest) {
   const stream = new ReadableStream({
     async start(controller) {
       let total = 0;
+      let socket: net.Socket | null = null;
+      let activeSocket: net.Socket | tls.TLSSocket | null = null;
+      const closeSocket = (s: net.Socket | tls.TLSSocket | null) => {
+        if (!s || s.destroyed) return;
+        try { s.end(); } catch { /* no-op */ }
+        s.destroy();
+      };
+
       try {
         // ── 1. DNS ──────────────────────────────────────────────
         const dnsStart = performance.now();
@@ -244,7 +252,6 @@ export async function POST(req: NextRequest) {
 
         // ── 2. TCP ──────────────────────────────────────────────
         const tcpStart = performance.now();
-        let socket: net.Socket;
         try { socket = await tcpConnect(ip, port); }
         catch (err) {
           emit(controller, { type: "error", stage: "tcp", message: (err as Error).message });
@@ -255,7 +262,7 @@ export async function POST(req: NextRequest) {
         emit(controller, { type: "stage", id: "tcp", status: "done", duration: tcpDuration });
 
         // ── 3. TLS (HTTPS only) ─────────────────────────────────
-        let activeSocket: net.Socket | tls.TLSSocket = socket;
+        activeSocket = socket;
         if (isHttps) {
           const tlsStart = performance.now();
           let tlsData: { socket: tls.TLSSocket; cert: CertInfo; cipher: string; version: string };
@@ -309,6 +316,10 @@ export async function POST(req: NextRequest) {
       } catch (err) {
         emit(controller, { type: "error", stage: "unknown", message: (err as Error).message });
         controller.close();
+      } finally {
+        // Always release sockets on completion, failure, or early controller close.
+        closeSocket(activeSocket);
+        if (socket && socket !== activeSocket) closeSocket(socket);
       }
     },
   });

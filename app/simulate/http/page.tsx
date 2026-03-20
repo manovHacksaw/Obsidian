@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useCallback, useRef } from "react";
+import React, { useState, useCallback, useRef, useEffect } from "react";
 
 import type {
   AppMode,
@@ -118,6 +118,8 @@ export default function HttpSimulatePage() {
   const validationError = urlError ?? bodyError ?? null;
   const [rightWidth, setRightWidth] = useState(256);
   const dragRef = useRef<{ startX: number; startW: number } | null>(null);
+  const onMoveRef = useRef<((ev: MouseEvent) => void) | null>(null);
+  const onUpRef = useRef<(() => void) | null>(null);
 
   // ── Shared reset ──
 
@@ -255,7 +257,7 @@ export default function HttpSimulatePage() {
     setIsDone(true);
     setIsRunning(false);
     setCurrentIdx(-1);
-  }, [isRunning, routes, method, virtualUrl, serverRunning, simMode]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isRunning, routes, method, virtualUrl, serverRunning, simMode]);
 
   // ── Real mode ── simulation (SSE streaming) ──
 
@@ -272,10 +274,13 @@ export default function HttpSimulatePage() {
 
     const abort = new AbortController();
     abortRef.current = abort;
+    let completed = false;
 
     // Auto-cancel after timeout
     const clearTimer = () => { if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null; } };
     timeoutRef.current = setTimeout(() => {
+      if (completed) return;
+      completed = true;
       abort.abort();
       clearTimer();
       setSimError(`Request timed out after ${timeoutSecs}s. The server did not respond in time.`);
@@ -295,6 +300,7 @@ export default function HttpSimulatePage() {
     } catch (e) {
       const isAbort = e instanceof Error && e.name === "AbortError";
       if (!isAbort) {
+        completed = true;
         clearTimer();
         setStages([{ id: "dns", status: "error", duration: 0 }]);
         setCurrentIdx(-1);
@@ -307,6 +313,7 @@ export default function HttpSimulatePage() {
     }
 
     if (!res.body) {
+      completed = true;
       clearTimer();
       setSimError("No response stream from server");
       setCurrentIdx(-1);
@@ -367,6 +374,7 @@ export default function HttpSimulatePage() {
             else results.push(entry);
             setStages([...results]);
             setCurrentIdx(-1);
+            completed = true;
             clearTimer();
             setSimError(msg);
             setIsDone(true);
@@ -425,6 +433,7 @@ export default function HttpSimulatePage() {
               body:      respDat.body,
               totalTime: total,
             });
+            completed = true;
             setCurrentIdx(-1);
             clearTimer();
             setIsDone(true);
@@ -433,6 +442,7 @@ export default function HttpSimulatePage() {
         }
       }
     } catch (err) {
+      completed = true;
       clearTimer();
       const raw = err instanceof Error ? err.message : "Stream read error";
       setSimError(sanitizeError(raw, "unknown"));
@@ -445,23 +455,36 @@ export default function HttpSimulatePage() {
   const runSimulation = appMode === "virtual" ? runVirtualSimulation : runRealSimulation;
   const donedStages = stages.filter((s) => s.status === "done" || s.status === "error");
 
+  const cleanupDragHandlers = useCallback(() => {
+    if (onMoveRef.current) {
+      window.removeEventListener("mousemove", onMoveRef.current);
+      onMoveRef.current = null;
+    }
+    if (onUpRef.current) {
+      window.removeEventListener("mouseup", onUpRef.current);
+      onUpRef.current = null;
+    }
+    dragRef.current = null;
+  }, []);
+
   // ── Drag handle handler ──
   const handleDragMouseDown = (e: React.MouseEvent) => {
     e.preventDefault();
+    cleanupDragHandlers();
     dragRef.current = { startX: e.clientX, startW: rightWidth };
-    const onMove = (ev: MouseEvent) => {
+    onMoveRef.current = (ev: MouseEvent) => {
       if (!dragRef.current) return;
       const delta = dragRef.current.startX - ev.clientX;
       setRightWidth(Math.min(640, Math.max(200, dragRef.current.startW + delta)));
     };
-    const onUp = () => {
-      dragRef.current = null;
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
+    onUpRef.current = () => {
+      cleanupDragHandlers();
     };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    window.addEventListener("mousemove", onMoveRef.current);
+    window.addEventListener("mouseup", onUpRef.current);
   };
+
+  useEffect(() => cleanupDragHandlers, [cleanupDragHandlers]);
 
   // ── Render ─────────────────────────────────────────────────────
 
