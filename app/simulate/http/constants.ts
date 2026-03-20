@@ -73,6 +73,17 @@ export const REAL_PRESETS = [
   { label: "Localhost :3001",  url: "http://localhost:3001",                           method: "GET" as HttpMethod },
 ];
 
+export const POLLING_REAL_PRESETS = [
+  { label: "Binance BTC/USDT", url: "https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT", method: "GET" as HttpMethod },
+
+  
+  { label: "Kraken XBT/USD",   url: "https://api.kraken.com/0/public/Ticker?pair=XBTUSD", method: "GET" as HttpMethod },
+  { label: "UTC Clock",        url: "https://worldtimeapi.org/api/timezone/Etc/UTC",   method: "GET" as HttpMethod },
+  { label: "httpbin UUID",     url: "https://httpbin.org/uuid",                        method: "GET" as HttpMethod },
+  { label: "Localhost :3000",  url: "http://localhost:3000",                           method: "GET" as HttpMethod },
+  { label: "Localhost :3001",  url: "http://localhost:3001",                           method: "GET" as HttpMethod },
+];
+
 export const STAGE_DEFS: { id: StageId; label: string; desc: string; realDesc: string; direction: "→" | "←" | "⚙" }[] = [
   { id: "dns",        label: "DNS Resolution",   desc: "Resolving hostname to IP",           realDesc: "OS resolver → actual A record lookup",    direction: "→" },
   { id: "tcp",        label: "TCP Handshake",     desc: "SYN → SYN-ACK → ACK",               realDesc: "Real 3-way handshake, measured in ms",    direction: "→" },
@@ -130,3 +141,37 @@ export function substituteParams(body: string, params: Record<string, string>): 
 
 export function wait(ms: number) { return new Promise<void>((r) => setTimeout(r, ms)); }
 export function uid() { return Math.random().toString(36).slice(2, 10); }
+
+// ── Polling ──────────────────────────────────────────────────────
+
+export const POLL_STAGE_BASE_MS: Record<"dns" | "tcp" | "request" | "response", number> = {
+  dns: 10, tcp: 18, request: 5, response: 12,
+};
+
+export interface PollEvent {
+  id: string;
+  delayMs: number;
+  label: string;
+  body: string;
+}
+
+export const DEFAULT_POLL_EVENTS: PollEvent[] = [
+  {
+    id: "e1",
+    delayMs: 4000,
+    label: "New message",
+    body: '{\n  "type": "message",\n  "from": "alice",\n  "text": "Hey, is anyone there?",\n  "ts": 1700000004\n}',
+  },
+  {
+    id: "e2",
+    delayMs: 9000,
+    label: "Price update",
+    body: '{\n  "type": "price_update",\n  "symbol": "BTC-USD",\n  "price": 67420,\n  "change24h": 2.3\n}',
+  },
+  {
+    id: "e3",
+    delayMs: 13000,
+    label: "New message",
+    body: '{\n  "type": "message",\n  "from": "bob",\n  "text": "Nice price move!",\n  "ts": 1700000013\n}',
+  },
+];

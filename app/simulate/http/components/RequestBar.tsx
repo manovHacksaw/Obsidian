@@ -20,6 +20,7 @@ interface RequestBarProps {
   timeoutSecs: number;
   routes: Route[];
   realResult: RealResult | null;
+  lastCompletedStageLabel: string | null;
   onSetMethod: (m: HttpMethod) => void;
   onSetVirtualUrl: (url: string) => void;
   onSetRealUrl: (url: string) => void;
@@ -49,6 +50,7 @@ export function RequestBar({
   timeoutSecs,
   routes,
   realResult,
+  lastCompletedStageLabel,
   onSetMethod,
   onSetVirtualUrl,
   onSetRealUrl,
@@ -108,13 +110,20 @@ export function RequestBar({
           />
         )}
 
-        {/* Sim mode toggle — virtual only */}
-        {appMode === "virtual" && (
+        {/* Sim mode toggle */}
+        {appMode !== "polling" && (
           <div className="flex items-stretch border-l border-white/8 shrink-0">
             {(["auto", "step"] as SimMode[]).map((m) => (
               <button
                 key={m}
                 onClick={() => onSetSimMode(m)}
+                title={
+                  m === "auto"
+                    ? "Auto — all stages run continuously"
+                    : appMode === "real"
+                      ? "Step — each stage waits for your click. Real network ops happen one at a time. Session lives for 60 s of inactivity."
+                      : "Step — advance through each stage manually with Next"
+                }
                 className={`px-3 text-[9px] font-bold font-body uppercase tracking-widest transition-colors ${
                   simMode === m ? "bg-[#ff8f6f]/10 text-[#ff8f6f]" : "bg-transparent text-[#494847] hover:text-[#adaaaa]"
                 }`}
@@ -129,14 +138,35 @@ export function RequestBar({
         <div className="w-px bg-white/8 shrink-0" />
 
         {/* Send / Next / Cancel CTA */}
-        {appMode === "virtual" && simMode === "step" && waitingStep && isRunning ? (
-          <button
-            onClick={onAdvanceStep}
-            className="px-5 bg-[#1a1919] text-[#ff8f6f] font-headline font-bold text-sm flex items-center gap-2 hover:bg-[#201f1f] transition-colors shrink-0"
-          >
-            <span className="material-symbols-outlined text-base">skip_next</span>
-            Next
-          </button>
+        {simMode === "step" && waitingStep && isRunning ? (
+          <div className="flex items-stretch shrink-0">
+            {appMode === "real" && (
+              <button
+                onClick={onCancelRequest}
+                className="px-3 bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors border-r border-white/8"
+                title="Cancel"
+              >
+                <span className="material-symbols-outlined text-base">stop_circle</span>
+              </button>
+            )}
+            <button
+              onClick={onAdvanceStep}
+              className="relative px-5 bg-[#ff8f6f]/12 text-[#ff8f6f] font-headline font-bold text-sm flex items-center gap-2 hover:bg-[#ff8f6f]/20 transition-colors overflow-hidden"
+            >
+              {/* Pulse sweep animation */}
+              <motion.span
+                className="absolute inset-0 bg-[#ff8f6f]/10"
+                animate={{ opacity: [0, 0.5, 0] }}
+                transition={{ repeat: Infinity, duration: 1.2, ease: "easeInOut" }}
+              />
+              <motion.span
+                className="material-symbols-outlined text-base relative z-10"
+                animate={{ x: [0, 3, 0] }}
+                transition={{ repeat: Infinity, duration: 0.9, ease: "easeInOut" }}
+              >skip_next</motion.span>
+              <span className="relative z-10">Next</span>
+            </button>
+          </div>
         ) : isRunning ? (
           <button
             onClick={appMode === "real" ? onCancelRequest : undefined}
@@ -182,12 +212,20 @@ export function RequestBar({
       {/* ── Sub-bar: hint / error · controls ── */}
       <div className="flex items-center gap-4 min-w-0 px-2">
 
-        {/* Left: validation error or method hint */}
+        {/* Left: validation error · step-mode hint · method hint */}
         <div className="flex items-center gap-1.5 min-w-0 flex-1">
           {validationError ? (
             <>
               <span className="material-symbols-outlined text-red-400/70 shrink-0" style={{ fontSize: "12px", lineHeight: 1 }}>error</span>
               <span className="text-[10px] font-body text-red-400/70 truncate">{validationError}</span>
+            </>
+          ) : simMode === "step" && appMode === "real" && waitingStep && isRunning ? (
+            /* Session-expiry reminder while waiting for Next click */
+            <>
+              <span className="material-symbols-outlined text-yellow-500/60 shrink-0" style={{ fontSize: "12px", lineHeight: 1 }}>timer</span>
+              <span className="text-[10px] font-body text-yellow-500/60 truncate">
+                <span className="font-bold">{lastCompletedStageLabel ?? "Stage"} complete</span> — session stays open for <span className="font-bold">60 s</span> of inactivity. Click <span className="font-bold">Next</span> to run the next stage or <span className="font-bold">Cancel</span> to abort.
+              </span>
             </>
           ) : (
             <span className="text-[10px] font-body text-[#3a3939] truncate">
@@ -276,6 +314,58 @@ export function RequestBar({
           )}
         </div>
       </div>
+
+      {/* ── Step-mode guide ── */}
+      <AnimatePresence>
+        {simMode === "step" && !isRunning && !isDone && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.18, ease: "easeOut" }}
+            className="overflow-hidden"
+          >
+            <div className="rounded-sm border border-white/6 bg-[#0f0f0f] overflow-hidden">
+              {/* Header */}
+              <div className="flex items-center gap-2 px-3 py-1.5 border-b border-white/5">
+                <span className="material-symbols-outlined text-[#ff8f6f]/60" style={{ fontSize: "12px", lineHeight: 1 }}>
+                  steps
+                </span>
+                <span className="text-[9px] font-bold font-body uppercase tracking-[0.18em] text-[#494847]">
+                  How step mode works
+                </span>
+              </div>
+              {/* Steps */}
+              <div className="px-3 py-2.5 flex flex-col gap-1.5">
+                {(appMode === "real" ? [
+                  { icon: "send",          label: "Click Send",       desc: "DNS resolution runs immediately — you'll see the result in ~10–100 ms." },
+                  { icon: "skip_next",     label: "Click Next",       desc: "TCP handshake executes. The socket stays open inside a server-side session." },
+                  { icon: "skip_next",     label: "Click Next",       desc: "TLS handshake (HTTPS only). Skipped automatically for plain HTTP." },
+                  { icon: "skip_next",     label: "Click Next",       desc: "HTTP request bytes are written to the socket." },
+                  { icon: "skip_next",     label: "Click Next",       desc: "Waiting for first byte (TTFB) from the remote server." },
+                  { icon: "skip_next",     label: "Click Next",       desc: "Response body downloaded. Session closed." },
+                  { icon: "timer",         label: "60 s idle limit",  desc: "If you don't click Next within 60 seconds the server session expires and you'll need to start over." },
+                ] : [
+                  { icon: "send",          label: "Click Send",       desc: "Simulation starts. DNS stage begins with a short animated delay." },
+                  { icon: "skip_next",     label: "Click Next",       desc: "Advances to the next stage — TCP, TLS, Request, Processing, Response." },
+                  { icon: "check_circle",  label: "All done",         desc: "After the Response stage completes the result panel fills in automatically." },
+                ]).map(({ icon, label, desc }, i) => (
+                  <div key={i} className="flex items-start gap-2.5">
+                    <span
+                      className="material-symbols-outlined text-[#494847] shrink-0 mt-px"
+                      style={{ fontSize: "12px", lineHeight: 1.4 }}
+                    >{icon}</span>
+                    <span className="text-[10px] font-body text-[#3a3939] leading-relaxed">
+                      <span className="font-bold text-[#555350]">{label}</span>
+                      {" — "}{desc}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* ── Body editor ── */}
       <AnimatePresence>

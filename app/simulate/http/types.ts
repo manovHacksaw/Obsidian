@@ -1,6 +1,7 @@
 // ── Types ──────────────────────────────────────────────────────
 
-export type AppMode = "virtual" | "real";
+export type AppMode = "virtual" | "real" | "polling";
+export type ProtocolMode = "http" | "polling" | "long-poll" | "websocket" | "heartbeat";
 export type HttpMethod = "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
 export type StageId = "dns" | "tcp" | "tls" | "request" | "processing" | "response";
 export type StageStatus = "idle" | "active" | "done" | "error" | "skipped";
@@ -42,4 +43,30 @@ export interface ResponseState {
   body: string;
   totalTime: number;
   matchedRoute?: string;
+}
+
+export type PollMode = "virtual" | "real";
+
+export interface PollRound {
+  index: number;
+  stages: StageResult[];
+  status: 200 | 304;
+  duration: number;
+  startedAt: number;
+  responseBody?: string;
+  // Real mode extras
+  responseHeaders?: Record<string, string>;
+  httpStatus?: number;
+  httpStatusText?: string;
+}
+
+export interface PollSession {
+  id: string;
+  startedAt: number;
+  endedAt: number;
+  mode: PollMode;
+  intervalMs: number;
+  totalRounds: number;
+  dataRounds: number;
+  url?: string;
 }
