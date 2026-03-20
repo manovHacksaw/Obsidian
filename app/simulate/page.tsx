@@ -13,20 +13,20 @@ const protocols = [
   },
   {
     num: "02",
+    title: "Long Polling",
+    description:
+      "Server holds the connection open until data is ready. Fewer round-trips, near-zero latency. See exactly how many requests short-polling would waste.",
+    icon: "hourglass_empty",
+    href: "/simulate/long-poll",
+    featured: false,
+    available: true,
+  },
+  {
+    num: "03",
     title: "WebSocket Flows",
     description:
       "Real-time duplex visualizer for stateful connections and binary message streaming.",
     icon: "sync_alt",
-    href: "#",
-    featured: false,
-    available: false,
-  },
-  {
-    num: "03",
-    title: "JS Event Loop",
-    description:
-      "Deconstruct the call stack, microtask queue, and rendering pipeline frame-by-frame.",
-    icon: "restart_alt",
     href: "#",
     featured: false,
     available: false,
