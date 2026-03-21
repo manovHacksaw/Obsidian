@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import type { LongPollRoundStatus } from "../types";
+import type { SSEConnectionStatus, SSEResponseType } from "../types";
 
 type ProtocolId = "http" | "polling" | "long-poll" | "sse" | "websocket";
 
@@ -15,23 +15,23 @@ const ITEMS: { id: ProtocolId; label: string; available: boolean; href: string }
   { id: "websocket", label: "WebSocket", available: false, href: "#"                   },
 ];
 
-interface LongPollTopBarProps {
-  isConnected:   boolean;
-  activeStatus:  LongPollRoundStatus | "holding" | null;
+interface SSETopBarProps {
+  connectionStatus: SSEConnectionStatus;
+  responseType:     SSEResponseType;
 }
 
-export function LongPollTopBar({ isConnected, activeStatus }: LongPollTopBarProps) {
-  const router = useRouter();
-  const current: ProtocolId = "long-poll";
+export function SSETopBar({ connectionStatus, responseType }: SSETopBarProps) {
+  const router  = useRouter();
+  const current: ProtocolId = "sse";
 
   const [visited, setVisited] = useState<Set<ProtocolId>>(() => {
-    if (typeof window === "undefined") return new Set(["http", "polling", "long-poll"]);
+    if (typeof window === "undefined") return new Set(["http", "polling", "long-poll", "sse"]);
     try {
       const stored = localStorage.getItem("obsidian_visited_modes");
       const parsed: ProtocolId[] = stored ? JSON.parse(stored) : [];
-      return new Set([...parsed, "long-poll"]);
+      return new Set([...parsed, "sse"]);
     } catch {
-      return new Set(["http", "polling", "long-poll"]);
+      return new Set(["http", "polling", "long-poll", "sse"]);
     }
   });
 
@@ -44,21 +44,25 @@ export function LongPollTopBar({ isConnected, activeStatus }: LongPollTopBarProp
     });
   }, []);
 
-  const dotColor = activeStatus === "holding"
-    ? "bg-amber-400"
-    : isConnected
-      ? "bg-amber-400"
-      : "bg-[#494847]";
+  const dotColor =
+    connectionStatus === "streaming"   ? "bg-green-400"
+    : connectionStatus === "connecting" ? "bg-blue-400"
+    : connectionStatus === "error"      ? "bg-red-400"
+    : "bg-[#494847]";
 
-  const dotGlow = activeStatus === "holding" || isConnected
-    ? { boxShadow: "0 0 6px rgba(251,191,36,0.5)" }
-    : {};
+  const dotGlow: React.CSSProperties =
+    connectionStatus === "streaming"
+      ? { boxShadow: "0 0 6px rgba(74,222,128,0.5)" }
+      : connectionStatus === "connecting"
+        ? { boxShadow: "0 0 6px rgba(96,165,250,0.5)" }
+        : {};
 
-  const statusLabel = activeStatus === "holding"
-    ? "Holding"
-    : isConnected
-      ? "Connected"
-      : "Idle";
+  const statusLabel =
+    connectionStatus === "streaming"   ? "Streaming"
+    : connectionStatus === "connecting" ? "Connecting"
+    : connectionStatus === "closed"     ? "Closed"
+    : connectionStatus === "error"      ? "Error"
+    : "Idle";
 
   return (
     <header className="grid grid-cols-3 items-center px-6 py-3 border-b border-white/5 bg-[#0e0e0e]/90 backdrop-blur-xl shrink-0 z-10">
@@ -74,7 +78,7 @@ export function LongPollTopBar({ isConnected, activeStatus }: LongPollTopBarProp
         </Link>
         <span className="text-[#494847]">/</span>
         <span className="text-[#ff8f6f] font-headline font-bold text-sm uppercase tracking-widest">
-          Long Poll
+          SSE
         </span>
       </div>
 
@@ -121,10 +125,22 @@ export function LongPollTopBar({ isConnected, activeStatus }: LongPollTopBarProp
         })}
       </div>
 
-      {/* Right: status dot */}
+      {/* Right: response type badge + status dot */}
       <div className="flex items-center gap-4 justify-end">
+        {responseType !== null && (
+          <span className={`text-[9px] font-bold font-body px-2 py-1 rounded-sm uppercase tracking-[0.15em] ${
+            responseType === "sse"
+              ? "bg-green-500/10 text-green-400"
+              : "bg-[#494847]/20 text-[#adaaaa]"
+          }`}>
+            {responseType === "sse" ? "Stream" : "Single Response"}
+          </span>
+        )}
         <div className="flex items-center gap-1.5">
-          <span className={`w-1.5 h-1.5 rounded-full ${dotColor}`} style={dotGlow} />
+          <span
+            className={`w-1.5 h-1.5 rounded-full transition-colors duration-300 ${dotColor} ${connectionStatus === "streaming" ? "animate-pulse" : ""}`}
+            style={dotGlow}
+          />
           <span className="text-[10px] font-body uppercase tracking-[0.2em] text-[#777575]">
             {statusLabel}
           </span>

@@ -23,6 +23,16 @@ const protocols = [
   },
   {
     num: "03",
+    title: "Server-Sent Events",
+    description:
+      "One persistent HTTP connection. Server pushes events as they happen — zero reconnects, zero empty responses. Watch the stream stay open while events arrive.",
+    icon: "stream",
+    href: "/simulate/sse",
+    featured: false,
+    available: true,
+  },
+  {
+    num: "04",
     title: "WebSocket Flows",
     description:
       "Real-time duplex visualizer for stateful connections and binary message streaming.",
@@ -32,7 +42,7 @@ const protocols = [
     available: false,
   },
   {
-    num: "04",
+    num: "05",
     title: "TCP/IP Stack",
     description:
       "Low-level packet inspection and handshake orchestration. The foundation of digital transit.",
@@ -103,15 +113,18 @@ export default function SimulatePage() {
             featured
           />
 
-          {/* WebSocket */}
+          {/* Long Polling */}
           <ProtocolCard {...protocols[1]} className="md:col-span-5" />
 
-          {/* Event Loop */}
+          {/* SSE */}
           <ProtocolCard {...protocols[2]} className="md:col-span-5" />
+
+          {/* WebSocket */}
+          <ProtocolCard {...protocols[3]} className="md:col-span-4" />
 
           {/* TCP/IP — featured large */}
           <ProtocolCard
-            {...protocols[3]}
+            {...protocols[4]}
             className="md:col-span-7"
             featured
           />
