@@ -360,7 +360,7 @@ export default function LongPollPage() {
       if (!isConnectedRef.current) break;
 
       const finalPhases: LongPollPhaseResult[] = [
-        phases.find((p) => p.phase === "connect") ?? { phase: "connect", status: "done", durationMs: 8 },
+        phases.find((p) => p.phase === "connect") ?? { phase: "connect", status: "done", durationMs: 0 },
         { phase: "hold",    status: "done", durationMs: holdMs    },
         { phase: "respond", status: "done", durationMs: respondMs },
       ];

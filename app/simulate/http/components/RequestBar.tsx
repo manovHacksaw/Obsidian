@@ -111,8 +111,7 @@ export function RequestBar({
         )}
 
         {/* Sim mode toggle */}
-        {appMode !== "polling" && (
-          <div className="flex items-stretch border-l border-white/8 shrink-0">
+        <div className="flex items-stretch border-l border-white/8 shrink-0">
             {(["auto", "step"] as SimMode[]).map((m) => (
               <button
                 key={m}
@@ -131,8 +130,7 @@ export function RequestBar({
                 {m}
               </button>
             ))}
-          </div>
-        )}
+        </div>
 
         {/* Divider before CTA */}
         <div className="w-px bg-white/8 shrink-0" />

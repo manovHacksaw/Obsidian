@@ -1,10 +1,10 @@
 // ── Types ──────────────────────────────────────────────────────
 
-export type AppMode = "virtual" | "real" | "polling";
+export type AppMode = "virtual" | "real";
 export type ProtocolMode = "http" | "polling" | "long-poll" | "websocket" | "heartbeat";
 export type HttpMethod = "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
 export type StageId = "dns" | "tcp" | "tls" | "request" | "processing" | "response";
-export type StageStatus = "idle" | "active" | "done" | "error" | "skipped";
+export type StageStatus = "idle" | "active" | "done" | "error" | "skipped" | "reused";
 export type SimMode = "auto" | "step";
 export type ViewMode = "visual" | "raw";
 
@@ -50,14 +50,23 @@ export type PollMode = "virtual" | "real";
 export interface PollRound {
   index: number;
   stages: StageResult[];
+  // "status" drives the 200/304 display in the UI.
+  // Virtual: set by the server simulation (fired→200, not fired→304).
+  // Real: set to the actual HTTP status the remote server returned.
+  //       A separate `dataChanged` flag captures body-comparison freshness.
   status: 200 | 304;
   duration: number;
   startedAt: number;
   responseBody?: string;
+  // Virtual ETag state — lets the UI show the real conditional-request headers
+  // that make 304 work, teaching the mechanism rather than just the outcome.
+  etag?: string;           // ETag the server returned this round
+  requestEtag?: string;    // If-None-Match the client sent this round
   // Real mode extras
   responseHeaders?: Record<string, string>;
-  httpStatus?: number;
+  httpStatus?: number;          // actual HTTP status from the remote server
   httpStatusText?: string;
+  dataChanged?: boolean;        // body differed from previous round (real mode only)
 }
 
 export interface PollSession {

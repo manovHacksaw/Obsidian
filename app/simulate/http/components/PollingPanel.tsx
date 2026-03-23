@@ -32,16 +32,44 @@ function MiniStageBars({ stages }: { stages: StageResult[] }) {
 
 // ── Status badge ─────────────────────────────────────────────────
 
-function StatusBadge({ status, selected }: { status: 200 | 304; selected: boolean }) {
-  if (status === 200) {
+function StatusBadge({
+  round,
+  mode,
+  selected,
+}: {
+  round: PollRound;
+  mode: PollMode;
+  selected: boolean;
+}) {
+  // Real mode: server almost always returns 200.
+  // We show the actual status code plus a "changed" / "same" indicator so the
+  // user isn't misled into thinking every 200 means new data.
+  if (mode === "real") {
+    const changed = round.dataChanged === true;
     return (
-      <span className={`text-[9px] font-bold font-mono px-1.5 py-0.5 rounded tabular-nums ${
+      <div className="flex items-center gap-1 shrink-0">
+        <span className={`text-[9px] font-bold font-mono px-1.5 py-0.5 rounded tabular-nums ${
+          selected ? "bg-white/10 text-[#adaaaa]" : "bg-white/[0.04] text-[#494847]"
+        }`}>{round.httpStatus ?? round.status}</span>
+        <span className={`text-[8px] font-bold font-body px-1 py-0.5 rounded shrink-0 ${
+          changed
+            ? selected ? "bg-green-500/25 text-green-300" : "bg-green-500/12 text-green-400"
+            : "bg-white/[0.02] text-[#1e1e1e]"
+        }`}>{changed ? "changed" : "same"}</span>
+      </div>
+    );
+  }
+
+  // Virtual mode: the server simulation uses real ETag logic — status is server-controlled.
+  if (round.status === 200) {
+    return (
+      <span className={`text-[9px] font-bold font-mono px-1.5 py-0.5 rounded tabular-nums shrink-0 ${
         selected ? "bg-green-500/25 text-green-300" : "bg-green-500/12 text-green-400"
       }`}>200</span>
     );
   }
   return (
-    <span className="text-[9px] font-bold font-mono px-1.5 py-0.5 rounded tabular-nums bg-white/[0.03] text-[#2e2e2e]">
+    <span className="text-[9px] font-bold font-mono px-1.5 py-0.5 rounded tabular-nums shrink-0 bg-white/[0.03] text-[#2e2e2e]">
       304
     </span>
   );
@@ -51,14 +79,16 @@ function StatusBadge({ status, selected }: { status: 200 | 304; selected: boolea
 
 function PollRoundRow({
   round,
+  mode,
   isSelected,
   onClick,
 }: {
   round: PollRound;
+  mode: PollMode;
   isSelected: boolean;
   onClick: () => void;
 }) {
-  const isData  = round.status === 200;
+  const isData  = mode === "real" ? round.dataChanged === true : round.status === 200;
   const totalMs = round.stages.filter((s) => s.status !== "skipped").reduce((s, r) => s + r.duration, 0);
   const preview = round.responseBody
     ? round.responseBody.replace(/\s+/g, " ").trim().slice(0, 56) + (round.responseBody.length > 56 ? "…" : "")
@@ -81,7 +111,7 @@ function PollRoundRow({
 
       <MiniStageBars stages={round.stages} />
 
-      <StatusBadge status={round.status} selected={isSelected} />
+      <StatusBadge round={round} mode={mode} selected={isSelected} />
 
       <span className={`text-[9px] font-mono flex-1 truncate ${isData ? "text-[#4a4846]" : "text-[#1e1e1e]"}`}>
         {isData && preview ? preview : "No change"}
@@ -160,8 +190,10 @@ export function PollingPanel({
   const mc        = METHOD_COLORS[pollMethod];
 
   const totalPolls   = pollRounds.length;
-  const emptyPolls   = pollRounds.filter((r) => r.status === 304).length;
-  const dataPolls    = pollRounds.filter((r) => r.status === 200).length;
+  const dataPolls    = pollRounds.filter((r) =>
+    pollMode === "real" ? r.dataChanged === true : r.status === 200
+  ).length;
+  const emptyPolls   = totalPolls - dataPolls;
   const wastePercent = totalPolls > 0 ? Math.round((emptyPolls / totalPolls) * 100) : 0;
   const dataPercent  = totalPolls > 0 ? Math.round((dataPolls  / totalPolls) * 100) : 0;
 
@@ -368,6 +400,7 @@ export function PollingPanel({
           >
             <PollRoundRow
               round={round}
+              mode={pollMode}
               isSelected={selectedRoundIdx === round.index}
               onClick={() => onSelectRound(selectedRoundIdx === round.index ? null : round.index)}
             />

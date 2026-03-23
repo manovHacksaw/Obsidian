@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import type { AppMode, PollMode, ProtocolMode, ViewMode } from "../types";
+import type { AppMode, ProtocolMode, ViewMode } from "../types";
 
 interface ProgressionItem {
   id: ProtocolMode;
@@ -19,14 +19,12 @@ const ITEMS: ProgressionItem[] = [
   { id: "heartbeat",  label: "Heartbeat",  available: false },
 ];
 
-function toProtocolMode(appMode: AppMode): ProtocolMode {
-  if (appMode === "polling") return "polling";
+function toProtocolMode(_appMode: AppMode): ProtocolMode {
   return "http";
 }
 
 interface TopBarProps {
   appMode: AppMode;
-  pollMode?: PollMode;
   viewMode: ViewMode;
   serverRunning: boolean;
   onSetAppMode: (m: AppMode) => void;
@@ -37,7 +35,6 @@ interface TopBarProps {
 
 export function TopBar({
   appMode,
-  pollMode,
   viewMode,
   serverRunning,
   onSetAppMode,
@@ -45,9 +42,8 @@ export function TopBar({
   onReset,
   onNavigateProtocol,
 }: TopBarProps) {
-  const router    = useRouter();
-  const isPolling = appMode === "polling";
-  const current   = toProtocolMode(appMode);
+  const router  = useRouter();
+  const current = toProtocolMode(appMode);
 
   // ── Visited state (localStorage) ──
   const [visited, setVisited] = useState<Set<ProtocolMode>>(() => {
@@ -83,7 +79,7 @@ export function TopBar({
         </Link>
         <span className="text-[#494847]">/</span>
         <span className="text-[#ff8f6f] font-headline font-bold text-sm uppercase tracking-widest">
-          {isPolling ? "Polling" : "HTTP"}
+          HTTP
         </span>
       </div>
 
@@ -107,6 +103,7 @@ export function TopBar({
               <button
                 onClick={() => {
                   if (!isClickable) return;
+                  if (item.id === "polling")   { router.push("/simulate/polling");   return; }
                   if (item.id === "long-poll") { router.push("/simulate/long-poll"); return; }
                   onNavigateProtocol(item.id);
                 }}
@@ -139,9 +136,17 @@ export function TopBar({
 
       {/* ── Right: view tools + status ── */}
       <div className="flex items-center gap-4 justify-end">
-        {/* View toggle — hidden in polling mode */}
-        {!isPolling && (
-          <div className="flex bg-[#1a1919] rounded-sm overflow-hidden border border-white/5">
+        {/* Versions link */}
+        <Link
+          href="/simulate/http/versions"
+          className="flex items-center gap-1 text-[#adaaaa] hover:text-[#ff8f6f] transition-colors text-[10px] font-bold font-body uppercase tracking-[0.15em]"
+        >
+          Versions
+          <span className="material-symbols-outlined text-sm">arrow_forward</span>
+        </Link>
+
+        {/* View toggle */}
+        <div className="flex bg-[#1a1919] rounded-sm overflow-hidden border border-white/5">
             {(["visual", "raw"] as ViewMode[]).map((v) => (
               <button
                 key={v}
@@ -154,28 +159,22 @@ export function TopBar({
               </button>
             ))}
           </div>
-        )}
 
         {/* Status dot */}
         <div className="flex items-center gap-1.5">
           <span
             className={`w-1.5 h-1.5 rounded-full ${
-              isPolling && pollMode === "real" ? "bg-[#ff8f6f]"  :
-              isPolling                        ? "bg-blue-400"   :
-              appMode === "real"               ? "bg-[#ff8f6f]"  :
-              serverRunning                    ? "bg-green-400"  : "bg-red-500"
+              appMode === "real" ? "bg-[#ff8f6f]" :
+              serverRunning      ? "bg-green-400"  : "bg-red-500"
             }`}
             style={
-              (isPolling && pollMode === "real") || appMode === "real" ? { boxShadow: "0 0 6px rgba(255,143,111,0.5)" } :
-              isPolling                                                 ? { boxShadow: "0 0 6px rgba(96,165,250,0.5)"  } :
-              serverRunning                                             ? { boxShadow: "0 0 6px rgba(74,222,128,0.5)"  } : {}
+              appMode === "real" ? { boxShadow: "0 0 6px rgba(255,143,111,0.5)" } :
+              serverRunning      ? { boxShadow: "0 0 6px rgba(74,222,128,0.5)"  } : {}
             }
           />
           <span className="text-[10px] font-body uppercase tracking-[0.2em] text-[#777575]">
-            {isPolling && pollMode === "real" ? "Real Network" :
-             isPolling                        ? "Simulated"    :
-             appMode === "real"               ? "Real Network" :
-             serverRunning                    ? "Server Running" : "Server Offline"}
+            {appMode === "real" ? "Real Network" :
+             serverRunning      ? "Server Running" : "Server Offline"}
           </span>
         </div>
       </div>

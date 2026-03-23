@@ -13,6 +13,16 @@ const protocols = [
   },
   {
     num: "02",
+    title: "Short Polling",
+    description:
+      "Client fires a request on a fixed interval — even when nothing has changed. Watch wasted round-trips accumulate in real time and see exactly what it costs.",
+    icon: "sync",
+    href: "/simulate/polling",
+    featured: false,
+    available: true,
+  },
+  {
+    num: "03",
     title: "Long Polling",
     description:
       "Server holds the connection open until data is ready. Fewer round-trips, near-zero latency. See exactly how many requests short-polling would waste.",
@@ -22,7 +32,7 @@ const protocols = [
     available: true,
   },
   {
-    num: "03",
+    num: "04",
     title: "Server-Sent Events",
     description:
       "One persistent HTTP connection. Server pushes events as they happen — zero reconnects, zero empty responses. Watch the stream stay open while events arrive.",
@@ -32,7 +42,17 @@ const protocols = [
     available: true,
   },
   {
-    num: "04",
+    num: "05",
+    title: "HOL Blocking",
+    description:
+      "HTTP/1.1 queues requests per connection — one slow file blocks the rest. HTTP/2 multiplexes all streams in parallel. Watch the difference unfold in real time.",
+    icon: "dns",
+    href: "/simulate/hol",
+    featured: false,
+    available: true,
+  },
+  {
+    num: "06",
     title: "WebSocket Flows",
     description:
       "Real-time duplex visualizer for stateful connections and binary message streaming.",
@@ -42,7 +62,7 @@ const protocols = [
     available: false,
   },
   {
-    num: "05",
+    num: "07",
     title: "TCP/IP Stack",
     description:
       "Low-level packet inspection and handshake orchestration. The foundation of digital transit.",
@@ -113,18 +133,21 @@ export default function SimulatePage() {
             featured
           />
 
-          {/* Long Polling */}
+          {/* Short Polling */}
           <ProtocolCard {...protocols[1]} className="md:col-span-5" />
 
+          {/* Long Polling */}
+          <ProtocolCard {...protocols[2]} className="md:col-span-4" />
+
           {/* SSE */}
-          <ProtocolCard {...protocols[2]} className="md:col-span-5" />
+          <ProtocolCard {...protocols[3]} className="md:col-span-4" />
 
           {/* WebSocket */}
-          <ProtocolCard {...protocols[3]} className="md:col-span-4" />
+          <ProtocolCard {...protocols[4]} className="md:col-span-4" />
 
           {/* TCP/IP — featured large */}
           <ProtocolCard
-            {...protocols[4]}
+            {...protocols[5]}
             className="md:col-span-7"
             featured
           />

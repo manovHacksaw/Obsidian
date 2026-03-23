@@ -84,12 +84,20 @@ export const POLLING_REAL_PRESETS = [
   { label: "Localhost :3001",  url: "http://localhost:3001",                           method: "GET" as HttpMethod },
 ];
 
-export const STAGE_DEFS: { id: StageId; label: string; desc: string; realDesc: string; direction: "→" | "←" | "⚙" }[] = [
+export const STAGE_DEFS: { id: StageId; label: string; realLabel?: string; desc: string; realDesc: string; direction: "→" | "←" | "⚙" }[] = [
   { id: "dns",        label: "DNS Resolution",   desc: "Resolving hostname to IP",           realDesc: "OS resolver → actual A record lookup",    direction: "→" },
   { id: "tcp",        label: "TCP Handshake",     desc: "SYN → SYN-ACK → ACK",               realDesc: "Real 3-way handshake, measured in ms",    direction: "→" },
   { id: "tls",        label: "TLS Handshake",     desc: "Certificate negotiation",            realDesc: "ClientHello → ServerHello → cert chain",  direction: "→" },
   { id: "request",    label: "HTTP Request",      desc: "Method, path, headers sent",         realDesc: "Raw HTTP/1.1 written to socket",          direction: "→" },
-  { id: "processing", label: "Server Processing", desc: "Route matched, response generated",  realDesc: "Time To First Byte (TTFB)",               direction: "⚙" },
+  {
+    id: "processing", label: "Server Processing", realLabel: "TTFB",
+    desc: "Route matched, response generated",
+    // TTFB (Time To First Byte) = server processing + response headers travelling
+    // back through the network. The client cannot separate these two — it only
+    // observes the moment the first byte of the response arrives.
+    realDesc: "Time to First Byte — server processing + network transit for response header",
+    direction: "⚙",
+  },
   { id: "response",   label: "HTTP Response",     desc: "Status + headers + body returned",   realDesc: "Download time, full body received",       direction: "←" },
 ];
 

@@ -14,11 +14,12 @@ export type LifecycleStepId =
 export type LifecycleStepStatus = "pending" | "active" | "done" | "error";
 
 export interface LifecycleStep {
-  id:          LifecycleStepId;
-  label:       string;
-  status:      LifecycleStepStatus;
-  durationMs?: number;
-  note?:       string;
+  id:           LifecycleStepId;
+  label:        string;
+  status:       LifecycleStepStatus;
+  durationMs?:  number;
+  note?:        string;
+  lastEventId?: string;   // set on "request" step during a Last-Event-ID reconnect
 }
 
 // Whether the remote endpoint behaved as a true SSE stream or a plain HTTP response.
@@ -39,6 +40,14 @@ export interface SSEEvent {
   data:       string;
   elapsedMs:  number;       // ms since connection established
   receivedAt: number;       // epoch ms
+  isReplay?:  boolean;      // received after a Last-Event-ID reconnect (was already delivered before)
+}
+
+// Info emitted by the server when resuming after Last-Event-ID reconnect
+export interface ReconnectResumeInfo {
+  lastEventId:     string;
+  skippedCount:    number;  // events the server skipped (already delivered)
+  resumingFromId:  string | null;
 }
 
 export interface SSESession {

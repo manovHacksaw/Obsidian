@@ -2,8 +2,8 @@
 
 import React from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import type { AppMode, HttpMethod, Route, RealResult, PollMode, PollSession } from "../types";
-import { METHODS, METHOD_COLORS, POLLING_REAL_PRESETS, REAL_PRESETS, statusColor, type PollEvent } from "../constants";
+import type { AppMode, HttpMethod, Route, RealResult } from "../types";
+import { METHODS, METHOD_COLORS, REAL_PRESETS, statusColor } from "../constants";
 
 const BLANK_ROUTE: Omit<Route, "id"> = {
   method: "GET", path: "/", status: 200,
@@ -13,13 +13,6 @@ const BLANK_ROUTE: Omit<Route, "id"> = {
 interface LeftPanelProps {
   appMode: AppMode;
   onSetAppMode: (m: AppMode) => void;
-  // Polling props
-  pollMode: PollMode;
-  onSetPollMode: (m: PollMode) => void;
-  pollEvents: PollEvent[];
-  firedEventIds: string[];
-  pollSessions: PollSession[];
-  onSelectPollTarget: (url: string, meth: HttpMethod) => void;
   // Virtual props
   serverRunning: boolean;
   routes: Route[];
@@ -69,12 +62,6 @@ function HttpModeToggle({ appMode, onSetAppMode, onReset }: {
 export function LeftPanel({
   appMode,
   onSetAppMode,
-  pollMode,
-  onSetPollMode,
-  pollEvents,
-  firedEventIds,
-  pollSessions,
-  onSelectPollTarget,
   serverRunning,
   routes,
   editingRoute,
@@ -90,168 +77,6 @@ export function LeftPanel({
   onSetMethod,
   onReset,
 }: LeftPanelProps) {
-
-  // ── Polling branch ─────────────────────────────────────────────
-  if (appMode === "polling") {
-    return (
-      <div className="w-72 shrink-0 border-r border-white/5 bg-[#0e0e0e] flex flex-col overflow-hidden">
-
-        {/* Virtual / Real mode toggle */}
-        <div className="flex border-b border-white/5 shrink-0">
-          {(["virtual", "real"] as const).map((m) => (
-            <button
-              key={m}
-              onClick={() => onSetPollMode(m)}
-              className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 text-[9px] font-bold font-body uppercase tracking-widest transition-colors ${
-                pollMode === m
-                  ? "text-[#ff8f6f] border-b-2 border-[#ff8f6f] -mb-px"
-                  : "text-[#494847] hover:text-[#adaaaa]"
-              }`}
-            >
-              <span className="material-symbols-outlined text-xs">
-                {m === "virtual" ? "dns" : "travel_explore"}
-              </span>
-              {m}
-            </button>
-          ))}
-        </div>
-
-        <div className="flex-1 overflow-y-auto min-h-0">
-
-          {pollMode === "real" ? (
-            /* ── Real mode: Quick Targets ── */
-            <div className="p-4 space-y-4">
-              <div>
-                <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#777575] block mb-2">
-                  Quick Targets
-                </span>
-                <div className="space-y-1">
-                  {POLLING_REAL_PRESETS.map((p) => (
-                    <button
-                      key={p.url}
-                      onClick={() => onSelectPollTarget(p.url, p.method)}
-                      className="w-full text-left px-3 py-2 rounded-sm transition-colors border bg-[#1a1919] border-transparent hover:bg-[#201f1f] text-[#adaaaa] hover:text-white"
-                    >
-                      <div className="text-[10px] font-bold font-body">{p.label}</div>
-                      <div className="text-[9px] font-mono text-[#494847] truncate mt-0.5">{p.url}</div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Why it's costly */}
-              <div className="h-px bg-white/5" />
-              <div className="space-y-2">
-                <span className="text-[9px] font-bold uppercase tracking-[0.15em] text-[#3a3939]">Why it&apos;s costly</span>
-                <div className="space-y-1.5">
-                  {[
-                    { icon: "wifi",        text: "Full TCP handshake on every poll" },
-                    { icon: "timer",       text: "Latency = up to 1 full interval" },
-                    { icon: "trending_up", text: "Server load scales with client count" },
-                  ].map(({ icon, text }) => (
-                    <div key={icon} className="flex items-start gap-2">
-                      <span className="material-symbols-outlined text-[#2e2e2e] shrink-0 mt-px" style={{ fontSize: "11px", lineHeight: 1.4 }}>{icon}</span>
-                      <span className="text-[9px] font-body text-[#2e2e2e] leading-relaxed">{text}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          ) : (
-            /* ── Virtual mode: Event Queue ── */
-            <div className="flex flex-col">
-              <div className="flex items-center justify-between px-4 py-2.5 border-b border-white/5 shrink-0">
-                <span className="text-[9px] font-bold uppercase tracking-[0.15em] text-[#494847]">Server Event Queue</span>
-                <span className="text-[9px] font-body text-[#2e2e2e]">{firedEventIds.length}/{pollEvents.length} fired</span>
-              </div>
-              <div className="px-2 pb-2 pt-2 space-y-1.5">
-                {pollEvents.map((evt) => {
-                  const fired = firedEventIds.includes(evt.id);
-                  const bodyPreview = evt.body.replace(/\s+/g, " ").trim().slice(0, 55);
-                  return (
-                    <div
-                      key={evt.id}
-                      className={`p-3 rounded-sm border transition-all duration-300 ${
-                        fired
-                          ? "bg-[#ff8f6f]/5 border-[#ff8f6f]/15"
-                          : "bg-[#111] border-white/[0.04]"
-                      }`}
-                    >
-                      <div className="flex items-center gap-2 mb-1.5">
-                        <span className={`w-1.5 h-1.5 rounded-full shrink-0 transition-all ${fired ? "bg-[#ff8f6f]" : "bg-[#252525]"}`} />
-                        <span className={`text-[9px] font-mono tabular-nums ${fired ? "text-[#ff8f6f]/60" : "text-[#333]"}`}>
-                          +{evt.delayMs / 1000}s
-                        </span>
-                        <span className={`text-[9px] font-body ${fired ? "text-[#adaaaa]" : "text-[#333]"}`}>
-                          {evt.label}
-                        </span>
-                        {fired && (
-                          <span className="ml-auto material-symbols-outlined text-[#ff8f6f]/70 shrink-0" style={{ fontSize: "11px" }}>
-                            check_circle
-                          </span>
-                        )}
-                      </div>
-                      <div className={`text-[9px] font-mono rounded-sm px-2 py-1.5 bg-[#0a0a0a] leading-relaxed ${fired ? "text-[#3a3939]" : "text-[#222]"}`}>
-                        {bodyPreview}…
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* Why it's costly */}
-              <div className="px-4 pb-4 pt-2 border-t border-white/5 mt-2 space-y-2">
-                <span className="text-[9px] font-bold uppercase tracking-[0.15em] text-[#3a3939]">Why it&apos;s costly</span>
-                <div className="space-y-1.5">
-                  {[
-                    { icon: "wifi",        text: "Full TCP handshake on every poll" },
-                    { icon: "timer",       text: "Latency = up to 1 full interval" },
-                    { icon: "trending_up", text: "Server load scales with client count" },
-                  ].map(({ icon, text }) => (
-                    <div key={icon} className="flex items-start gap-2">
-                      <span className="material-symbols-outlined text-[#2e2e2e] shrink-0 mt-px" style={{ fontSize: "11px", lineHeight: 1.4 }}>{icon}</span>
-                      <span className="text-[9px] font-body text-[#2e2e2e] leading-relaxed">{text}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* ── History (both modes) ── */}
-          {pollSessions.length > 0 && (
-            <div className="p-4 border-t border-white/5 space-y-2">
-              <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#777575] block">History</span>
-              <div className="space-y-1">
-                {pollSessions.slice().reverse().map((s) => {
-                  const waste = s.totalRounds > 0
-                    ? Math.round(((s.totalRounds - s.dataRounds) / s.totalRounds) * 100)
-                    : 0;
-                  return (
-                    <div key={s.id} className="px-3 py-2 rounded-sm bg-[#1a1919] border border-transparent">
-                      <div className="flex items-center gap-2 mb-1">
-                        <span className={`text-[9px] font-bold font-body px-1.5 py-0.5 rounded-sm ${
-                          s.mode === "real"
-                            ? "bg-blue-500/15 text-blue-400"
-                            : "bg-purple-500/15 text-purple-400"
-                        }`}>{s.mode}</span>
-                        <span className="text-[9px] font-body text-[#494847]">{s.totalRounds} rounds · {s.intervalMs}ms</span>
-                        <span className="ml-auto text-[9px] font-mono text-red-400/70">{waste}% waste</span>
-                      </div>
-                      {s.url && (
-                        <div className="text-[9px] font-mono text-[#333] truncate">{s.url}</div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-        </div>
-      </div>
-    );
-  }
 
   if (appMode === "virtual") {
     return (

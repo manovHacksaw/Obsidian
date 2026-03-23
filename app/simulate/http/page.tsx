@@ -14,17 +14,12 @@ import type {
   Route,
   RealResult,
   ResponseState,
-  PollRound,
-  PollMode,
-  PollSession,
 } from "./types";
 
 import {
   DEFAULT_ROUTES,
   STAGE_DEFS,
   STAGE_BASE_MS,
-  POLL_STAGE_BASE_MS,
-  DEFAULT_POLL_EVENTS,
   sanitizeError,
   substituteParams,
   wait,
@@ -37,8 +32,6 @@ import { RequestBar } from "./components/RequestBar";
 import { LifecyclePanel } from "./components/LifecyclePanel";
 import { ResponsePanel } from "./components/ResponsePanel";
 import { InspectOverlay } from "./components/InspectOverlay";
-import { PollingPanel } from "./components/PollingPanel";
-import { PollingAnalysis } from "./components/PollingAnalysis";
 
 // ── Internal helpers (virtual sim only, not exported) ──────────
 
@@ -106,24 +99,17 @@ export default function HttpSimulatePage() {
 
   const [timeoutSecs, setTimeoutSecs] = useState(30);
 
-  // ── Polling state ──────────────────────────────────────────────
-  const [pollMode,        setPollMode]        = useState<PollMode>("virtual");
-  const [pollUrl,         setPollUrl]         = useState("https://jsonplaceholder.typicode.com/todos/1");
-  const [pollMethod,      setPollMethod]      = useState<HttpMethod>("GET");
-  const [pollIntervalMs,  setPollIntervalMs]  = useState(1000);
-  const [maxPollRounds,   setMaxPollRounds]   = useState(15);
-  const [pollRounds,      setPollRounds]      = useState<PollRound[]>([]);
-  const [isPolling,       setIsPolling]       = useState(false);
-  const [currentPollStages, setCurrentPollStages] = useState<StageResult[]>([]);
-  const [pollWaiting,     setPollWaiting]     = useState(false);
-  const [firedEventIds,   setFiredEventIds]   = useState<string[]>([]);
-  const [currentPollRoundIdx, setCurrentPollRoundIdx] = useState(0);
-  const [selectedPollRoundIdx, setSelectedPollRoundIdx] = useState<number | null>(null);
-  const [pollSessions,    setPollSessions]    = useState<PollSession[]>([]);
-  const isPollingRef      = useRef(false);
-  const firedEventIdsRef  = useRef(new Set<string>());
-  const pollStartRef      = useRef(0);
-  const pollRoundAbortRef = useRef<AbortController | null>(null);
+  // ── Keep-alive second request state ──
+  interface KeepAliveRound {
+    stages:    StageResult[];
+    stageData: Record<string, Record<string, unknown>>;
+    totalMs:   number;
+    savedMs:   number;   // combined DNS+TCP+TLS skipped
+    response:  ResponseState;
+  }
+  const [keepAliveRound,     setKeepAliveRound]     = useState<KeepAliveRound | null>(null);
+  const [keepAliveRunning,   setKeepAliveRunning]   = useState(false);
+  const keepAliveAbortRef    = useRef<AbortController | null>(null);
 
   const stepResolveRef     = useRef<(() => void) | null>(null);
   const abortRef           = useRef<AbortController | null>(null);
@@ -170,8 +156,11 @@ export default function HttpSimulatePage() {
     setSimError(null);
     setWaitingStep(false);
     setHighlightedRouteId(null);
+    setKeepAliveRound(null);
+    setKeepAliveRunning(false);
     stepResolveRef.current = null;
     abortRef.current = null;
+    keepAliveAbortRef.current = null;
     realEventQueueRef.current = [];
     stepGateRef.current = false;
   };
@@ -705,297 +694,109 @@ export default function HttpSimulatePage() {
     appMode === "virtual" ? runVirtualSimulation
     : (simMode === "step"  ? runRealStepSimulation : runRealSimulation);
 
-  // ── Polling ────────────────────────────────────────────────────
+  // ── Keep-alive: second request on same TCP+TLS session ──────────
+  const runKeepAlive = useCallback(async () => {
+    if (keepAliveRunning || !isDone) return;
+    setKeepAliveRound(null);
+    setKeepAliveRunning(true);
 
-  const resetPolling = () => {
-    isPollingRef.current = false;
-    pollRoundAbortRef.current?.abort();
-    pollRoundAbortRef.current = null;
-    setIsPolling(false);
-    setPollRounds([]);
-    setCurrentPollStages([]);
-    setFiredEventIds([]);
-    setPollWaiting(false);
-    setCurrentPollRoundIdx(0);
-    setSelectedPollRoundIdx(null);
-    firedEventIdsRef.current = new Set();
-  };
-
-  const stopPolling = () => {
-    isPollingRef.current = false;
-    pollRoundAbortRef.current?.abort();
-  };
-
-  const runPolling = useCallback(async () => {
-    if (isPolling) return;
-
-    // Reset inline
-    setPollRounds([]);
-    setCurrentPollStages([]);
-    setFiredEventIds([]);
-    setPollWaiting(false);
-    setCurrentPollRoundIdx(0);
-    firedEventIdsRef.current = new Set();
-
-    setIsPolling(true);
-    isPollingRef.current = true;
-    pollStartRef.current = Date.now();
-
-    for (let i = 0; i < maxPollRounds; i++) {
-      if (!isPollingRef.current) break;
-      setCurrentPollRoundIdx(i);
-
-      const roundStart  = Date.now();
-      const roundStages: StageResult[] = [];
-
-      // Animate mini stages
-      for (const sid of ["dns", "tcp", "request", "response"] as const) {
-        if (!isPollingRef.current) break;
-        const dur = jitter(POLL_STAGE_BASE_MS[sid]);
-        setCurrentPollStages([...roundStages, { id: sid, status: "active", duration: 0 }]);
-        await wait(dur);
-        if (!isPollingRef.current) break;
-        roundStages.push({ id: sid, status: "done", duration: dur });
-        setCurrentPollStages([...roundStages]);
-      }
-
-      if (!isPollingRef.current) break;
-
-      // Determine if an event fires this round
-      const elapsed = Date.now() - pollStartRef.current;
-      const fired = DEFAULT_POLL_EVENTS.find(
-        (e) => e.delayMs <= elapsed && !firedEventIdsRef.current.has(e.id)
-      );
-      if (fired) {
-        firedEventIdsRef.current.add(fired.id);
-        setFiredEventIds((prev) => [...prev, fired.id]);
-      }
-
-      const round: PollRound = {
-        index:        i,
-        stages:       roundStages,
-        status:       fired ? 200 : 304,
-        duration:     Date.now() - roundStart,
-        startedAt:    roundStart,
-        responseBody: fired?.body,
-      };
-
-      setPollRounds((prev) => [...prev, round]);
-      setCurrentPollStages([]);
-
-      if (!isPollingRef.current) break;
-
-      // Wait for remaining interval in 100ms chunks so stop is responsive
-      const remaining = pollIntervalMs - (Date.now() - roundStart);
-      if (remaining > 0) {
-        setPollWaiting(true);
-        let waited = 0;
-        while (waited < remaining && isPollingRef.current) {
-          const chunk = Math.min(100, remaining - waited);
-          await wait(chunk);
-          waited += chunk;
-        }
-        setPollWaiting(false);
-      }
-    }
-
-    isPollingRef.current = false;
-    setIsPolling(false);
-    setCurrentPollStages([]);
-    setPollWaiting(false);
-  }, [isPolling, maxPollRounds, pollIntervalMs]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // ── Real polling (each round uses the SSE /api/simulate endpoint) ──
-
-  const runRealPolling = useCallback(async () => {
-    if (isPolling) return;
-
-    setPollRounds([]);
-    setCurrentPollStages([]);
-    setFiredEventIds([]);
-    setPollWaiting(false);
-    setCurrentPollRoundIdx(0);
-    setSelectedPollRoundIdx(null);
-    firedEventIdsRef.current = new Set();
-
-    setIsPolling(true);
-    isPollingRef.current = true;
-    pollStartRef.current = Date.now();
+    const abort = new AbortController();
+    keepAliveAbortRef.current = abort;
 
     const STAGE_IDS: StageId[] = ["dns", "tcp", "tls", "request", "processing", "response"];
-    let lastBody: string | null = null;
-    const completedRounds: PollRound[] = [];
+    let res: Response;
+    try {
+      res = await fetch("/api/simulate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ method, url: realUrl, headers: {}, body: reqBody || undefined, keepAlive: true }),
+        signal: abort.signal,
+      });
+    } catch {
+      setKeepAliveRunning(false);
+      return;
+    }
 
-    for (let i = 0; i < maxPollRounds; i++) {
-      if (!isPollingRef.current) break;
-      setCurrentPollRoundIdx(i);
-      setCurrentPollStages([]);
+    if (!res.body) { setKeepAliveRunning(false); return; }
 
-      const roundStart = Date.now();
-      const roundStages: StageResult[] = [];
-      const acc: Record<string, { duration: number; data?: Record<string, unknown> }> = {};
+    const reader  = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer    = "";
 
-      const roundAbort = new AbortController();
-      pollRoundAbortRef.current = roundAbort;
+    const req2Stages: StageResult[]                          = [];
+    const req2Data: Record<string, Record<string, unknown>> = {};
+    let   savedMs = 0;
 
-      let res: Response;
-      try {
-        res = await fetch("/api/simulate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ method: pollMethod, url: pollUrl }),
-          signal: roundAbort.signal,
-        });
-      } catch (e) {
-        if (!isPollingRef.current) break;
-        // Abort or network error — stop this round, try to continue
-        continue;
-      }
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
 
-      if (!res.body || !isPollingRef.current) break;
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          let evt: Record<string, unknown>;
+          try { evt = JSON.parse(line.slice(6)); } catch { continue; }
 
-      // Consume the SSE stream, updating currentPollStages as stages arrive
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      try {
-        outer: while (true) {
-          if (!isPollingRef.current) { reader.cancel(); break; }
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop() ?? "";
-
-          for (const line of lines) {
-            if (!line.startsWith("data: ")) continue;
-            let evt: Record<string, unknown>;
-            try { evt = JSON.parse(line.slice(6)); } catch { continue; }
-
-            if (evt.type === "stage") {
-              const id       = evt.id as StageId;
-              const status   = evt.status as StageStatus;
-              const duration = evt.duration as number;
-              const data     = evt.data as Record<string, unknown> | undefined;
-              acc[id] = { duration, data };
-              const existing = roundStages.findIndex((s) => s.id === id);
-              const entry: StageResult = { id, status, duration };
-              if (existing >= 0) roundStages[existing] = entry;
-              else roundStages.push(entry);
-              setCurrentPollStages([...roundStages]);
-            } else if (evt.type === "error" || evt.type === "complete") {
-              break outer;
+          if (evt.type === "keep_alive_reuse") {
+            savedMs = 0; // will sum from reused stage durations below
+          } else if (evt.type === "stage" && evt.req === 2) {
+            const id       = evt.id as StageId;
+            const status   = evt.status as StageStatus;
+            const duration = evt.duration as number;
+            const data     = evt.data as Record<string, unknown> | undefined;
+            const existing = req2Stages.findIndex((s) => s.id === id);
+            const entry: StageResult = { id, status, duration };
+            if (existing >= 0) req2Stages[existing] = entry;
+            else req2Stages.push(entry);
+            if (data) req2Data[id] = data;
+            if (status === "reused") savedMs += duration; // always 0, tracked for display
+          } else if (evt.type === "complete" && (evt.keepAlive as boolean)) {
+            // Ensure all stages present
+            for (const sid of STAGE_IDS) {
+              if (!req2Stages.find((s) => s.id === sid)) {
+                req2Stages.push({ id: sid, status: "reused", duration: 0 });
+              }
             }
+            const total2   = evt.total2 as number ?? 0;
+            const respData = req2Data["response"] as {
+              status: number; statusText: string;
+              headers: Record<string, string>; body: string; bytes: number;
+            } | undefined;
+
+            // savedMs = what request 1 spent on DNS+TCP+TLS
+            const r1 = realResult;
+            const r1SavedMs = (r1?.dns.duration ?? 0) + (r1?.tcp.duration ?? 0) + (r1?.tls?.duration ?? 0);
+
+            setKeepAliveRound({
+              stages:    [...req2Stages],
+              stageData: { ...req2Data },
+              totalMs:   total2,
+              savedMs:   r1SavedMs,
+              response: {
+                status:    respData?.status ?? 200,
+                headers:   respData?.headers ?? {},
+                body:      respData?.body ?? "",
+                totalTime: total2,
+              },
+            });
           }
         }
-      } catch { /* cancelled */ }
-
-      if (!isPollingRef.current) break;
-
-      // Extract response data
-      const respAcc = acc["response"]?.data as {
-        status: number; statusText: string;
-        headers: Record<string, string>; body: string;
-      } | undefined;
-
-      const currentBody = respAcc?.body ?? null;
-      const isNewData   = currentBody !== null && currentBody !== lastBody;
-      if (isNewData) lastBody = currentBody;
-
-      // Ensure all STAGE_IDS appear (fill skipped/missing)
-      for (const sid of STAGE_IDS) {
-        if (!roundStages.find((s) => s.id === sid)) {
-          roundStages.push({ id: sid, status: "skipped", duration: 0 });
-        }
       }
+    } catch { /* aborted */ }
 
-      const round: PollRound = {
-        index:          i,
-        stages:         roundStages,
-        status:         isNewData ? 200 : 304,
-        duration:       Date.now() - roundStart,
-        startedAt:      roundStart,
-        responseBody:   isNewData ? (currentBody ?? undefined) : undefined,
-        responseHeaders: respAcc?.headers,
-        httpStatus:     respAcc?.status,
-        httpStatusText: respAcc?.statusText,
-      };
+    setKeepAliveRunning(false);
+  }, [keepAliveRunning, isDone, method, realUrl, reqBody, realResult]); // eslint-disable-line react-hooks/exhaustive-deps
 
-      completedRounds.push(round);
-      setPollRounds((prev) => [...prev, round]);
-      setCurrentPollStages([]);
+  // ── Polling ────────────────────────────────────────────────────
 
-      if (!isPollingRef.current) break;
-
-      // Wait remaining interval in 100ms chunks
-      const remaining = pollIntervalMs - (Date.now() - roundStart);
-      if (remaining > 0) {
-        setPollWaiting(true);
-        let waited = 0;
-        while (waited < remaining && isPollingRef.current) {
-          const chunk = Math.min(100, remaining - waited);
-          await wait(chunk);
-          waited += chunk;
-        }
-        setPollWaiting(false);
-      }
-    }
-
-    // Save session to history
-    const dataRounds = completedRounds.filter((r) => r.status === 200).length;
-    if (completedRounds.length > 0) {
-      setPollSessions((prev) => [
-        {
-          id: uid(),
-          startedAt: pollStartRef.current,
-          endedAt: Date.now(),
-          mode: "real",
-          intervalMs: pollIntervalMs,
-          totalRounds: completedRounds.length,
-          dataRounds,
-          url: pollUrl,
-        },
-        ...prev.slice(0, 9),
-      ]);
-    }
-
-    isPollingRef.current = false;
-    pollRoundAbortRef.current = null;
-    setIsPolling(false);
-    setCurrentPollStages([]);
-    setPollWaiting(false);
-  }, [isPolling, maxPollRounds, pollIntervalMs, pollUrl, pollMethod]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const handleNavigateProtocol = (mode: ProtocolMode) => {
-    reset();
-    if (mode === "polling") { setAppMode("polling"); return; }
-    // "http" → restore virtual sub-mode (real stays real if already real)
-    if (appMode === "polling") setAppMode("virtual");
+  const handleNavigateProtocol = (_mode: ProtocolMode) => {
+    // All other protocol navigations are handled by TopBar's router.push directly.
+    // This callback is only reached for "http" (self) which is a no-op.
   };
   const donedStages = stages.filter((s) => s.status === "done" || s.status === "error");
-
-  // Derive response for selected poll round → feeds ResponsePanel in polling mode
-  const selectedPollResponse: ResponseState | null = (() => {
-    if (appMode !== "polling" || selectedPollRoundIdx === null) return null;
-    const round = pollRounds[selectedPollRoundIdx];
-    if (!round) return null;
-    if (round.status === 304) {
-      return {
-        status: 304,
-        headers: round.responseHeaders ?? {},
-        body: "// 304 Not Modified — no new data since last poll",
-        totalTime: round.duration,
-      };
-    }
-    return {
-      status: round.httpStatus ?? 200,
-      headers: round.responseHeaders ?? { "content-type": "application/json" },
-      body: round.responseBody ?? "",
-      totalTime: round.duration,
-    };
-  })();
 
   // Label of the most-recently completed stage — shown in the step-mode waiting hint
   const lastCompletedStageLabel: string | null = (() => {
@@ -1042,7 +843,6 @@ export default function HttpSimulatePage() {
 
       <TopBar
         appMode={appMode}
-        pollMode={pollMode}
         viewMode={viewMode}
         serverRunning={serverRunning}
         onSetAppMode={setAppMode}
@@ -1057,12 +857,6 @@ export default function HttpSimulatePage() {
         <LeftPanel
           appMode={appMode}
           onSetAppMode={setAppMode}
-          pollMode={pollMode}
-          onSetPollMode={setPollMode}
-          pollEvents={DEFAULT_POLL_EVENTS}
-          firedEventIds={firedEventIds}
-          pollSessions={pollSessions}
-          onSelectPollTarget={(url, meth) => { setPollUrl(url); setPollMethod(meth); }}
           serverRunning={serverRunning}
           routes={routes}
           editingRoute={editingRoute}
@@ -1081,31 +875,8 @@ export default function HttpSimulatePage() {
 
         {/* ── CENTER ── */}
         <div className="flex-1 flex flex-col overflow-hidden">
-          {appMode === "polling" ? (
-            <PollingPanel
-              pollMode={pollMode}
-              pollUrl={pollUrl}
-              pollMethod={pollMethod}
-              pollRounds={pollRounds}
-              currentPollStages={currentPollStages}
-              currentRoundIdx={currentPollRoundIdx}
-              isPolling={isPolling}
-              pollWaiting={pollWaiting}
-              pollIntervalMs={pollIntervalMs}
-              maxPollRounds={maxPollRounds}
-              selectedRoundIdx={selectedPollRoundIdx}
-              onSetPollUrl={setPollUrl}
-              onSetPollMethod={setPollMethod}
-              onSetInterval={setPollIntervalMs}
-              onSetMaxRounds={setMaxPollRounds}
-              onStart={pollMode === "real" ? runRealPolling : runPolling}
-              onStop={stopPolling}
-              onReset={resetPolling}
-              onSelectRound={setSelectedPollRoundIdx}
-            />
-          ) : (
-            <>
-              <RequestBar
+          <>
+            <RequestBar
                 appMode={appMode}
                 method={method}
                 virtualUrl={virtualUrl}
@@ -1152,42 +923,116 @@ export default function HttpSimulatePage() {
                 realResult={realResult}
                 response={response}
               />
+
+              {/* ── Keep-Alive panel ── */}
+              {appMode === "real" && isDone && !simError && (
+                <div className="shrink-0 border-t border-white/5 px-6 py-3 bg-[#0a0a0a]">
+                  {!keepAliveRound && (
+                    <div className="flex items-center gap-3">
+                      <div className="flex-1 h-px bg-white/5" />
+                      <button
+                        onClick={runKeepAlive}
+                        disabled={keepAliveRunning}
+                        className="flex items-center gap-2 px-3 py-1.5 rounded-sm border border-white/8 bg-[#111] hover:bg-[#1a1919] hover:border-white/16 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        {keepAliveRunning ? (
+                          <span className="material-symbols-outlined text-[#adaaaa] animate-spin" style={{ fontSize: "13px" }}>refresh</span>
+                        ) : (
+                          <span className="material-symbols-outlined text-green-400/70" style={{ fontSize: "13px" }}>recycling</span>
+                        )}
+                        <span className="text-[9px] font-bold font-body uppercase tracking-[0.15em] text-[#adaaaa]">
+                          {keepAliveRunning ? "Reusing connection…" : "Send again (keep-alive)"}
+                        </span>
+                      </button>
+                      <div className="flex-1 h-px bg-white/5" />
+                    </div>
+                  )}
+
+                  {keepAliveRound && (
+                    <div className="space-y-2">
+                      {/* Divider */}
+                      <div className="flex items-center gap-3">
+                        <div className="flex-1 h-px bg-white/5" />
+                        <div className="flex items-center gap-1.5 px-2 py-1 rounded-sm bg-green-500/8 border border-green-500/15">
+                          <span className="material-symbols-outlined text-green-400" style={{ fontSize: "11px" }}>recycling</span>
+                          <span className="text-[9px] font-bold font-body uppercase tracking-[0.15em] text-green-400">
+                            Keep-Alive — Request 2
+                          </span>
+                          <span className="text-[9px] font-mono text-green-400/60 ml-1">
+                            saved {keepAliveRound.savedMs}ms
+                          </span>
+                        </div>
+                        <div className="flex-1 h-px bg-white/5" />
+                      </div>
+
+                      {/* Compact stage row */}
+                      <div className="flex items-center gap-1.5 px-1 flex-wrap">
+                        {keepAliveRound.stages.map((s) => {
+                          const isReused   = s.status === "reused";
+                          const isDoneStage = s.status === "done";
+                          const colors: Record<string, string> = {
+                            dns: "blue", tcp: "purple", tls: "yellow",
+                            request: "orange", processing: "orange", response: "green",
+                          };
+                          const c = colors[s.id] ?? "white";
+                          return (
+                            <div key={s.id} className={`flex items-center gap-1 px-2 py-1 rounded-sm border text-[9px] font-body ${
+                              isReused
+                                ? "bg-white/[0.02] border-white/[0.04] text-[#2e2e2e]"
+                                : `bg-${c}-500/8 border-${c}-500/15 text-${c}-400`
+                            }`}>
+                              <span className="font-bold uppercase tracking-wider">{s.id}</span>
+                              {isReused
+                                ? <span className="text-[#2e2e2e]">reused</span>
+                                : <span className="font-mono tabular-nums">{s.duration}ms</span>
+                              }
+                            </div>
+                          );
+                        })}
+                        <span className="text-[9px] font-mono text-[#494847] ml-auto tabular-nums">
+                          {keepAliveRound.totalMs}ms total
+                        </span>
+                      </div>
+
+                      <p className="text-[9px] font-body text-[#2e2e2e] px-1 leading-relaxed">
+                        DNS + TCP + TLS were skipped — the existing socket was reused.
+                        Only the HTTP round-trip was paid.
+                      </p>
+
+                      <button
+                        onClick={runKeepAlive}
+                        className="text-[9px] font-body text-[#3a3939] hover:text-[#adaaaa] transition-colors px-1"
+                      >
+                        Run again →
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
             </>
-          )}
         </div>
 
-        {appMode === "polling" && !isPolling && pollRounds.length > 0 && selectedPollRoundIdx === null ? (
-          <PollingAnalysis
-            rounds={pollRounds}
-            intervalMs={pollIntervalMs}
-            mode={pollMode}
-            pollUrl={pollMode === "real" ? pollUrl : undefined}
-            rightWidth={rightWidth}
-            onDragHandleMouseDown={handleDragMouseDown}
-          />
-        ) : (appMode !== "polling" || selectedPollRoundIdx !== null) && (
-          <ResponsePanel
-            appMode={appMode}
-            method={appMode === "polling" ? pollMethod : method}
-            virtualUrl={appMode === "polling" ? (pollUrl || "polling") : virtualUrl}
-            isDone={appMode === "polling" ? selectedPollRoundIdx !== null : isDone}
-            isRunning={appMode === "polling" ? false : isRunning}
-            simError={appMode === "polling" ? null : simError}
-            response={appMode === "polling" ? selectedPollResponse : response}
-            realResult={appMode === "polling" ? null : realResult}
-            respTab={respTab}
-            bodyPretty={bodyPretty}
-            bodyCopied={bodyCopied}
-            rightWidth={rightWidth}
-            expandedBody={expandedBody}
-            onSetRespTab={setRespTab}
-            onSetBodyPretty={setBodyPretty}
-            onSetBodyCopied={setBodyCopied}
-            onSetExpandedBody={setExpandedBody}
-            onShowLifecycle={() => setShowLifecycle(true)}
-            onDragHandleMouseDown={handleDragMouseDown}
-          />
-        )}
+        <ResponsePanel
+          appMode={appMode}
+          method={method}
+          virtualUrl={virtualUrl}
+          isDone={isDone}
+          isRunning={isRunning}
+          simError={simError}
+          response={response}
+          realResult={realResult}
+          respTab={respTab}
+          bodyPretty={bodyPretty}
+          bodyCopied={bodyCopied}
+          rightWidth={rightWidth}
+          expandedBody={expandedBody}
+          onSetRespTab={setRespTab}
+          onSetBodyPretty={setBodyPretty}
+          onSetBodyCopied={setBodyCopied}
+          onSetExpandedBody={setExpandedBody}
+          onShowLifecycle={() => setShowLifecycle(true)}
+          onDragHandleMouseDown={handleDragMouseDown}
+        />
       </div>
 
       <InspectOverlay
