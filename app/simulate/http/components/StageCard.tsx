@@ -10,10 +10,10 @@ import {
   STAGE_ICON,
 } from "../constants";
 
-interface RealRow { key: string; value: string; accent?: boolean }
+interface RealRow { key: string; value: string; accent?: boolean; badge?: "cache-hit" }
 
 interface StageCardProps {
-  def: { id: StageId; label: string; desc: string; realDesc: string; direction: "→" | "←" | "⚙" };
+  def: { id: StageId; label: string; realLabel?: string; desc: string; realDesc: string; direction: "→" | "←" | "⚙" };
   index: number;
   currentIdx: number;
   result: StageResult | undefined;
@@ -45,9 +45,12 @@ export function StageCard({
   const realRows: RealRow[] = [];
   if (done && appMode === "real" && sd) {
     if (def.id === "dns") {
-      const d = sd as { ip: string; hostname: string };
+      const d = sd as { ip: string; hostname: string; cached?: boolean };
       realRows.push({ key: "hostname", value: d.hostname });
       realRows.push({ key: "resolved", value: d.ip, accent: true });
+      if (d.cached) {
+        realRows.push({ key: "source", value: "OS cache — no DNS query issued", badge: "cache-hit" });
+      }
     } else if (def.id === "tcp") {
       const port = (() => { try { const u = new URL(realUrl); return u.port || (realUrl.startsWith("https") ? "443" : "80"); } catch { return "?"; } })();
       realRows.push({ key: "target", value: `${dnsSD?.ip ?? ""}:${port}`, accent: true });
@@ -124,7 +127,7 @@ export function StageCard({
               err      ? "text-red-400" :
               skipped  ? "text-[#262626]" : "text-[#3a3939]"
             }`}>
-              {def.label}
+              {appMode === "real" && def.realLabel ? def.realLabel : def.label}
             </span>
             {skipped && <span className="text-[9px] font-body text-[#262626]">— HTTP only</span>}
           </div>
@@ -158,12 +161,18 @@ export function StageCard({
               className="mt-3 overflow-hidden"
             >
               <div className="border-l-2 border-[#262626] pl-3 space-y-1">
-                {realRows.map(({ key, value, accent }) => (
+                {realRows.map(({ key, value, accent, badge }) => (
                   <div key={key} className="flex items-baseline gap-2 font-mono text-[10px] leading-relaxed">
                     <span className="text-[#494847] w-20 shrink-0 tabular-nums">{key}</span>
-                    <span className={`truncate ${accent ? "text-[#ff8f6f] font-semibold" : "text-[#777575]"}`}>
-                      {value}
-                    </span>
+                    {badge === "cache-hit" ? (
+                      <span className="text-[9px] font-bold font-body px-1.5 py-0.5 rounded-sm bg-blue-500/15 text-blue-400 shrink-0">
+                        Cache hit
+                      </span>
+                    ) : (
+                      <span className={`truncate ${accent ? "text-[#ff8f6f] font-semibold" : "text-[#777575]"}`}>
+                        {value}
+                      </span>
+                    )}
                   </div>
                 ))}
               </div>

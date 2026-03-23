@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect } from "react";
-import type { SSEMode, SSEConnectionStatus, SSEEvent, SSESession, SSEResponseType, SSEConnectionInfo, LifecycleStep, LifecycleStepStatus } from "./types";
+import type { SSEMode, SSEConnectionStatus, SSEEvent, SSESession, SSEResponseType, SSEConnectionInfo, LifecycleStep, LifecycleStepStatus, ReconnectResumeInfo } from "./types";
 import { uid } from "./constants";
 import { SSETopBar }          from "./components/SSETopBar";
 import { SSELeftPanel }       from "./components/SSELeftPanel";
@@ -61,6 +61,16 @@ export default function SSEPage() {
   // ── History ──
   const [sessions, setSessions] = useState<SSESession[]>([]);
 
+  // ── Reconnect state ──
+  // lastEventIdRef: ID of the last SSE event received (kept across resets for reconnect).
+  // reconnectLastEventId: set when user disconnects and there's a lastEventId to resume from.
+  // reconnectInfo: server's reply telling us how many events were skipped on resume.
+  const lastEventIdRef          = useRef<string | null>(null);
+  const [reconnectLastEventId,  setReconnectLastEventId]  = useState<string | null>(null);
+  const [reconnectInfo,         setReconnectInfo]         = useState<ReconnectResumeInfo | null>(null);
+  // Whether the current streaming session is a reconnect (events after this point are replays)
+  const isReconnectSessionRef   = useRef(false);
+
   // ── Refs ──
   const isStreamingRef  = useRef(false);
   const abortRef        = useRef<AbortController | null>(null);
@@ -100,6 +110,10 @@ export default function SSEPage() {
     setConnectionInfo(null);
     setLifecycleSteps([]);
     setResponseHeaders({});
+    lastEventIdRef.current = null;
+    setReconnectLastEventId(null);
+    setReconnectInfo(null);
+    isReconnectSessionRef.current = false;
   }, []);
 
   // ── Disconnect ──
@@ -111,14 +125,30 @@ export default function SSEPage() {
       streamTickRef.current = null;
     }
     setConnectionStatus("closed");
+    // Save lastEventId so the user can reconnect and demonstrate Last-Event-ID resumption.
+    // Only offer reconnect in virtual mode (real-mode servers may not support resumption).
+    if (lastEventIdRef.current) {
+      setReconnectLastEventId(lastEventIdRef.current);
+    }
   }, []);
 
-  // ── Connect ──
-  const connect = useCallback(async () => {
+  // ── Connect (also used for reconnect when lastEventId is provided) ──
+  const connect = useCallback(async (reconnectWithId?: string) => {
     if (isStreamingRef.current) return;
 
-    reset();
-    setConnectionStatus("connecting");
+    const isReconnect = !!reconnectWithId;
+
+    if (isReconnect) {
+      // Reconnect: keep existing events, append new ones after a visual separator
+      setConnectionStatus("connecting");
+      isReconnectSessionRef.current = true;
+      setReconnectInfo(null);
+    } else {
+      reset();
+      setConnectionStatus("connecting");
+      isReconnectSessionRef.current = false;
+    }
+
     isStreamingRef.current = true;
     sessionStartRef.current = Date.now();
 
@@ -155,6 +185,7 @@ export default function SSEPage() {
           mode:              sseMode,
           sessionStartedAt:  sessionStartRef.current,
           ...(sseMode === "real" ? { url: sseUrl, timeoutMs } : {}),
+          ...(isReconnect ? { lastEventId: reconnectWithId } : {}),
         }),
         signal: abort.signal,
       });
@@ -173,7 +204,17 @@ export default function SSEPage() {
 
     const receivedEvents: SSEEvent[] = [];
     let   connectDurationMs  = 0;
-    let   eventIndex         = 0;
+    // On reconnect, event index continues from existing events list length
+    let   eventIndex         = isReconnect
+      ? await new Promise<number>((resolve) => {
+          // Read current length synchronously via a local hack — we just set it from current events
+          resolve(0); // will be overridden below
+        })
+      : 0;
+
+    // We need current events length for indexing on reconnect — read it synchronously
+    // by tracking it in a ref
+    const eventIndexRef = { current: eventIndex };
 
     try {
       for await (const evt of readSSE(res, abort.signal)) {
@@ -207,14 +248,29 @@ export default function SSEPage() {
           }
 
         } else if (evt.type === "lifecycle") {
-          const stepId     = evt.step as string;
-          const stepStatus = evt.status as LifecycleStepStatus;
-          const durationMs = evt.durationMs as number | undefined;
+          const stepId      = evt.step as string;
+          const stepStatus  = evt.status as LifecycleStepStatus;
+          const durationMs  = evt.durationMs as number | undefined;
+          const evtLastId   = evt.lastEventId as string | undefined;
           setLifecycleSteps((prev) => prev.map((s) =>
             s.id === stepId
-              ? { ...s, status: stepStatus, ...(durationMs !== undefined ? { durationMs } : {}) }
+              ? {
+                  ...s,
+                  status: stepStatus,
+                  ...(durationMs !== undefined ? { durationMs } : {}),
+                  ...(evtLastId ? { lastEventId: evtLastId } : {}),
+                }
               : s
           ));
+
+        } else if (evt.type === "reconnect_resume") {
+          // Server confirmed it received Last-Event-ID and will skip delivered events
+          const info: ReconnectResumeInfo = {
+            lastEventId:    evt.lastEventId as string,
+            skippedCount:   evt.skippedCount as number,
+            resumingFromId: evt.resumingFromId as string | null,
+          };
+          setReconnectInfo(info);
 
         } else if (evt.type === "response_headers") {
           setResponseHeaders(evt.headers as Record<string, string>);
@@ -232,15 +288,27 @@ export default function SSEPage() {
 
         } else if (evt.type === "event") {
           const sseEvent: SSEEvent = {
-            index:      eventIndex++,
+            index:      eventIndexRef.current++,
             id:         evt.id as string | undefined,
             eventType:  evt.eventType as string,
             data:       evt.data as string,
             elapsedMs:  evt.elapsedMs as number,
             receivedAt: Date.now(),
+            isReplay:   isReconnectSessionRef.current,
           };
+          // Track last event ID for potential future reconnects
+          if (sseEvent.id) lastEventIdRef.current = sseEvent.id;
           receivedEvents.push(sseEvent);
-          setEvents((prev) => [...prev, sseEvent]);
+          if (isReconnect) {
+            setEvents((prev) => {
+              // Set the correct index relative to existing events
+              const correctedEvent = { ...sseEvent, index: prev.length };
+              eventIndexRef.current = prev.length + 1;
+              return [...prev, correctedEvent];
+            });
+          } else {
+            setEvents((prev) => [...prev, sseEvent]);
+          }
 
         } else if (evt.type === "error") {
           setConnectionStatus("error");
@@ -286,7 +354,15 @@ export default function SSEPage() {
         avgIntervalMs,
       }]);
     }
-  }, [sseMode, sseUrl, timeoutMs, reset]);
+  }, [sseMode, sseUrl, timeoutMs, reset]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Reconnect ──
+  // Initiates a new SSE connection with Last-Event-ID, appending replayed events
+  // to the existing event list so the user can see the full before/after picture.
+  const reconnect = useCallback((lastEventId: string) => {
+    setReconnectLastEventId(null);
+    connect(lastEventId);
+  }, [connect]);
 
   // ── Cleanup on unmount ──
   useEffect(() => () => {
@@ -329,10 +405,13 @@ export default function SSEPage() {
           lifecycleSteps={lifecycleSteps}
           responseHeaders={responseHeaders}
           selectedEventIdx={selectedEventIdx}
-          onConnect={connect}
+          reconnectLastEventId={reconnectLastEventId}
+          reconnectInfo={reconnectInfo}
+          onConnect={() => connect()}
           onDisconnect={disconnect}
           onReset={reset}
           onSelectEvent={setSelectedEventIdx}
+          onReconnect={reconnect}
         />
 
         {showAnalysis ? (

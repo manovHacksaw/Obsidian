@@ -2,7 +2,7 @@
 
 import { useRef, useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import type { SSEEvent, SSEMode, SSEConnectionStatus, SSEResponseType, SSEConnectionInfo, LifecycleStep } from "../types";
+import type { SSEEvent, SSEMode, SSEConnectionStatus, SSEResponseType, SSEConnectionInfo, LifecycleStep, ReconnectResumeInfo } from "../types";
 import { getEventTypeStyle } from "../constants";
 import { LifecycleTimeline } from "./LifecycleTimeline";
 import { HeadersPanel }      from "./HeadersPanel";
@@ -65,8 +65,14 @@ function SSEEventRow({
 }) {
   const preview = event.data.replace(/\s+/g, " ").trim();
   const short   = preview.length > 64 ? preview.slice(0, 64) + "…" : preview;
-  const accentColor = isHttp ? "border-l-[#494847]/30 bg-[#111]" : "border-l-green-500/15 bg-green-500/[0.015]";
-  const accentSelected = isHttp ? "border-l-[#adaaaa]/30 bg-[#1a1919]" : "border-l-green-500/40 bg-green-500/[0.06]";
+  const isReplay = event.isReplay === true;
+  // Replay events use a yellow/amber accent to distinguish them from initial-session events
+  const accentColor = isReplay
+    ? "border-l-yellow-400/20 bg-yellow-400/[0.01]"
+    : isHttp ? "border-l-[#494847]/30 bg-[#111]" : "border-l-green-500/15 bg-green-500/[0.015]";
+  const accentSelected = isReplay
+    ? "border-l-yellow-400/40 bg-yellow-400/[0.04]"
+    : isHttp ? "border-l-[#adaaaa]/30 bg-[#1a1919]" : "border-l-green-500/40 bg-green-500/[0.06]";
 
   return (
     <div
@@ -85,7 +91,7 @@ function SSEEventRow({
         {short}
       </span>
 
-      <span className={`text-[9px] font-mono shrink-0 tabular-nums ${isHttp ? "text-[#494847]" : "text-green-400/50"}`}>
+      <span className={`text-[9px] font-mono shrink-0 tabular-nums ${isReplay ? "text-yellow-400/40" : isHttp ? "text-[#494847]" : "text-green-400/50"}`}>
         +{event.elapsedMs}ms
       </span>
 
@@ -103,25 +109,48 @@ function SSEEventRow({
   );
 }
 
+// ── Reconnect separator ─────────────────────────────────────────
+// Shown in the event list at the boundary between pre-disconnect and post-reconnect events.
+
+function ReconnectSeparator({ info }: { info: ReconnectResumeInfo }) {
+  return (
+    <div className="flex items-center gap-2 px-4 py-2 border-b border-white/[0.03] bg-yellow-400/[0.025]">
+      <span className="material-symbols-outlined text-yellow-400/60 shrink-0" style={{ fontSize: "11px", lineHeight: 1 }}>
+        restart_alt
+      </span>
+      <span className="text-[9px] font-mono text-yellow-400/70 flex-1">
+        Reconnected — Last-Event-ID: <span className="text-yellow-300/80">{info.lastEventId}</span>
+        <span className="text-yellow-400/40 ml-2">
+          · {info.skippedCount} event{info.skippedCount !== 1 ? "s" : ""} skipped (already delivered)
+          {info.resumingFromId ? ` · resuming from ${info.resumingFromId}` : ""}
+        </span>
+      </span>
+    </div>
+  );
+}
+
 // ── Props ────────────────────────────────────────────────────────
 
 interface SSEPanelProps {
-  sseMode:           SSEMode;
-  sseUrl:            string;
-  onSetSseUrl:       (u: string) => void;
-  events:            SSEEvent[];
-  connectionStatus:  SSEConnectionStatus;
-  connectMs:         number | null;
-  streamElapsedMs:   number;
-  responseType:      SSEResponseType;
-  connectionInfo:    SSEConnectionInfo | null;
-  lifecycleSteps:    LifecycleStep[];
-  responseHeaders:   Record<string, string>;
-  selectedEventIdx:  number | null;
-  onConnect:         () => void;
-  onDisconnect:      () => void;
-  onReset:           () => void;
-  onSelectEvent:     (idx: number | null) => void;
+  sseMode:              SSEMode;
+  sseUrl:               string;
+  onSetSseUrl:          (u: string) => void;
+  events:               SSEEvent[];
+  connectionStatus:     SSEConnectionStatus;
+  connectMs:            number | null;
+  streamElapsedMs:      number;
+  responseType:         SSEResponseType;
+  connectionInfo:       SSEConnectionInfo | null;
+  lifecycleSteps:       LifecycleStep[];
+  responseHeaders:      Record<string, string>;
+  selectedEventIdx:     number | null;
+  reconnectLastEventId: string | null;
+  reconnectInfo:        ReconnectResumeInfo | null;
+  onConnect:            () => void;
+  onDisconnect:         () => void;
+  onReset:              () => void;
+  onSelectEvent:        (idx: number | null) => void;
+  onReconnect:          (lastEventId: string) => void;
 }
 
 // ── Component ────────────────────────────────────────────────────
@@ -139,10 +168,13 @@ export function SSEPanel({
   lifecycleSteps,
   responseHeaders,
   selectedEventIdx,
+  reconnectLastEventId,
+  reconnectInfo,
   onConnect,
   onDisconnect,
   onReset,
   onSelectEvent,
+  onReconnect,
 }: SSEPanelProps) {
   const sentinelRef = useRef<HTMLDivElement>(null);
   const [activeTab, setActiveTab] = useState<"events" | "headers">("events");
@@ -422,7 +454,7 @@ export function SSEPanel({
           </div>
         )}
 
-        {/* Completed events */}
+        {/* Completed events — with reconnect separator injected at replay boundary */}
         {events.map((event) => (
           <motion.div
             key={event.index}
@@ -430,6 +462,10 @@ export function SSEPanel({
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.15, ease: "easeOut" }}
           >
+            {/* Insert separator before the first replay event */}
+            {event.isReplay && reconnectInfo && event.index === events.findIndex((e) => e.isReplay) && (
+              <ReconnectSeparator info={reconnectInfo} />
+            )}
             <SSEEventRow
               event={event}
               isSelected={selectedEventIdx === event.index}
@@ -470,6 +506,28 @@ export function SSEPanel({
             <span className="text-[9px] font-body text-[#2e2e2e]">
               Click any event row to inspect its data →
             </span>
+          </div>
+        )}
+
+        {/* Reconnect button — shown in virtual mode after disconnect when there's a lastEventId */}
+        {sseMode === "virtual" && connectionStatus === "closed" && reconnectLastEventId && (
+          <div className="px-4 py-4 flex flex-col items-center gap-3 border-t border-white/[0.03]">
+            <div className="text-center space-y-1">
+              <p className="text-[10px] font-bold font-body text-[#adaaaa]">
+                Browser auto-reconnects with Last-Event-ID
+              </p>
+              <p className="text-[9px] font-body text-[#3a3939] max-w-xs leading-relaxed">
+                The browser sends <span className="font-mono text-yellow-400/70">Last-Event-ID: {reconnectLastEventId}</span> in the new request.
+                The server skips already-delivered events and resumes the stream from where you left off.
+              </p>
+            </div>
+            <button
+              onClick={() => onReconnect(reconnectLastEventId)}
+              className="flex items-center gap-2 px-4 py-2 rounded-sm border border-yellow-400/20 bg-yellow-400/[0.04] hover:bg-yellow-400/[0.08] text-yellow-400/80 hover:text-yellow-300 transition-colors"
+            >
+              <span className="material-symbols-outlined" style={{ fontSize: "14px", lineHeight: 1 }}>restart_alt</span>
+              <span className="text-[10px] font-bold font-body">Reconnect (Last-Event-ID: {reconnectLastEventId})</span>
+            </button>
           </div>
         )}
 

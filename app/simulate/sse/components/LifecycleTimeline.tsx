@@ -48,6 +48,12 @@ function StepPill({ step }: { step: LifecycleStep }) {
           <span className={isDone ? "text-green-400/50" : "text-[#3a3939]"}>{durationLabel}</span>
         )}
       </span>
+      {/* Last-Event-ID badge shown on the request step during reconnect */}
+      {step.lastEventId && isDone && (
+        <span className="ml-1 px-1 py-px rounded-[2px] bg-yellow-400/10 text-yellow-400/80 text-[8px] font-mono">
+          Last-Event-ID: {step.lastEventId}
+        </span>
+      )}
     </div>
   );
 }

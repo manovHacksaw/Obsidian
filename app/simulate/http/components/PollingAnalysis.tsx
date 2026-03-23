@@ -38,7 +38,12 @@ export function PollingAnalysis({
 }: PollingAnalysisProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const totalRounds = rounds.length;
-  const dataRounds  = rounds.filter((r) => r.status === 200).length;
+  // Real mode: most servers return 200 for every request regardless of whether
+  // data changed — use `dataChanged` (body diff) to count meaningful rounds.
+  // Virtual mode: server controls 304 correctly via simulated ETag exchange.
+  const dataRounds  = rounds.filter((r) =>
+    mode === "real" ? r.dataChanged === true : r.status === 200
+  ).length;
   const emptyRounds = totalRounds - dataRounds;
   const wastePercent = totalRounds > 0 ? Math.round((emptyRounds / totalRounds) * 100) : 0;
   const dataPercent  = 100 - wastePercent;

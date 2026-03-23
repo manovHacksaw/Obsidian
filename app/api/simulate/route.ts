@@ -13,6 +13,10 @@ interface SimRequest {
   url: string;
   headers?: Record<string, string>;
   body?: string;
+  // When true the route makes TWO requests on the same socket, emitting
+  // req: 1 then req: 2 stage events so the frontend can show that
+  // DNS + TCP + TLS are skipped on the second request.
+  keepAlive?: boolean;
 }
 
 interface CertInfo {
@@ -187,6 +191,195 @@ function sendHttpRequest(
   });
 }
 
+// ── Keep-alive request sender ──────────────────────────────────
+// Like sendHttpRequest but uses Connection: keep-alive and detects
+// end-of-response via Content-Length or chunked terminal chunk rather
+// than socket close — so the connection can be reused for a second request.
+
+interface KeepAliveResult {
+  downloadDuration: number;
+  downloadBytes:    number;
+  status:           number;
+  statusText:       string;
+  responseHeaders:  Record<string, string>;
+  responseBody:     string;
+  serverKeepAlive:  boolean; // did the server honour keep-alive?
+}
+
+function sendHttpRequestKeepAlive(
+  socket: net.Socket | tls.TLSSocket,
+  opts: {
+    method: string; hostname: string; port: number; path: string;
+    headers: Record<string, string>; body: string; isHttps: boolean;
+  },
+  callbacks: {
+    onRequestSent: (raw: string, duration: number) => void;
+    onTtfb:        (duration: number) => void;
+  },
+): Promise<KeepAliveResult> {
+  return new Promise((resolve, reject) => {
+    const { method, hostname, port, path, headers, body, isHttps } = opts;
+    const defaultPort = isHttps ? 443 : 80;
+    const hostHeader  = port !== defaultPort ? `${hostname}:${port}` : hostname;
+
+    const lines = [
+      `${method.toUpperCase()} ${path || "/"} HTTP/1.1`,
+      `Host: ${hostHeader}`,
+      `Connection: keep-alive`,   // ← keep connection open
+      `User-Agent: ObsidianSim/1.0`,
+      `Accept: */*`,
+    ];
+    for (const [k, v] of Object.entries(headers)) {
+      const lk = k.toLowerCase();
+      if (lk === "host" || lk === "connection") continue;
+      if (lk === "content-type" && body) continue;
+      lines.push(`${k}: ${v}`);
+    }
+    if (body) {
+      lines.push(`Content-Type: application/json`);
+      lines.push(`Content-Length: ${Buffer.byteLength(body, "utf8")}`);
+    }
+    const requestRaw = lines.join("\r\n") + "\r\n\r\n" + (body ?? "");
+
+    const t0 = performance.now();
+    socket.write(requestRaw, "utf8");
+    const requestDuration = Math.round(performance.now() - t0);
+    callbacks.onRequestSent(requestRaw, requestDuration);
+
+    let buf          = Buffer.alloc(0);
+    let ttfbFired    = false;
+    let ttfbStart    = performance.now();
+    let downloadStart = 0;
+
+    function settle(chunk: Buffer) {
+      const raw = chunk.toString("utf8");
+      const sep = raw.indexOf("\r\n\r\n");
+      const headerSection = sep >= 0 ? raw.slice(0, sep) : raw;
+      const bodySection   = sep >= 0 ? raw.slice(sep + 4) : "";
+      const headerLines   = headerSection.split("\r\n");
+      const statusLine    = headerLines[0] ?? "HTTP/1.1 0 Unknown";
+      const parts         = statusLine.split(" ");
+      const status        = parseInt(parts[1] ?? "0", 10);
+      const statusText    = parts.slice(2).join(" ");
+
+      const responseHeaders: Record<string, string> = {};
+      for (const line of headerLines.slice(1)) {
+        const colon = line.indexOf(":");
+        if (colon > -1) {
+          responseHeaders[line.slice(0, colon).toLowerCase().trim()] =
+            line.slice(colon + 1).trim();
+        }
+      }
+
+      let body = bodySection;
+      if ((responseHeaders["transfer-encoding"] ?? "").toLowerCase().includes("chunked")) {
+        body = "";
+        let rem = bodySection;
+        while (rem.length > 0) {
+          const nl = rem.indexOf("\r\n");
+          if (nl === -1) break;
+          const size = parseInt(rem.slice(0, nl), 16);
+          if (isNaN(size) || size === 0) break;
+          body += rem.slice(nl + 2, nl + 2 + size);
+          rem   = rem.slice(nl + 2 + size + 2);
+        }
+      }
+
+      const serverConn = (responseHeaders["connection"] ?? "").toLowerCase();
+      // HTTP/1.1 defaults to keep-alive; server closes only if explicitly said so
+      const serverKeepAlive = serverConn !== "close";
+
+      resolve({
+        downloadDuration: Math.round(performance.now() - downloadStart),
+        downloadBytes:    chunk.length,
+        status, statusText,
+        responseHeaders,
+        responseBody:     body.slice(0, 10240),
+        serverKeepAlive,
+      });
+    }
+
+    function trySettle() {
+      const raw = buf.toString("utf8");
+      const sep = raw.indexOf("\r\n\r\n");
+      if (sep === -1) return; // headers not yet complete
+
+      const headerSection = raw.slice(0, sep);
+      const headerLines   = headerSection.split("\r\n");
+      const headerMap: Record<string, string> = {};
+      for (const line of headerLines.slice(1)) {
+        const c = line.indexOf(":");
+        if (c > -1) headerMap[line.slice(0, c).toLowerCase().trim()] = line.slice(c + 1).trim();
+      }
+
+      const te  = (headerMap["transfer-encoding"] ?? "").toLowerCase();
+      const cl  = parseInt(headerMap["content-length"] ?? "", 10);
+      const body = raw.slice(sep + 4);
+
+      if (te.includes("chunked")) {
+        // Wait for terminal chunk: 0\r\n\r\n
+        if (body.includes("\r\n0\r\n\r\n") || body.endsWith("0\r\n\r\n")) {
+          socket.removeListener("data", onData);
+          socket.removeListener("error", onError);
+          settle(buf);
+        }
+        return;
+      }
+
+      if (!isNaN(cl)) {
+        const bodyBytes = buf.length - (sep + 4);
+        if (bodyBytes >= cl) {
+          socket.removeListener("data", onData);
+          socket.removeListener("error", onError);
+          settle(buf.slice(0, sep + 4 + cl));
+        }
+        return;
+      }
+
+      // No Content-Length and not chunked — fall through to socket close
+    }
+
+    function onData(chunk: Buffer) {
+      if (!ttfbFired) {
+        ttfbFired     = true;
+        const ttfbMs  = Math.round(performance.now() - ttfbStart);
+        downloadStart = performance.now();
+        callbacks.onTtfb(ttfbMs);
+      }
+      buf = Buffer.concat([buf, chunk]);
+      trySettle();
+    }
+
+    function onError(err: Error) {
+      socket.removeListener("data",  onData);
+      socket.removeListener("error", onError);
+      reject(new Error(`Request error: ${err.message}`));
+    }
+
+    // Fallback: if server closes the connection, resolve with what we have.
+    socket.once("end", () => {
+      socket.removeListener("data",  onData);
+      socket.removeListener("error", onError);
+      if (buf.length > 0) {
+        settle(buf);
+      } else {
+        reject(new Error("Connection closed before response"));
+      }
+    });
+
+    socket.on("data",  onData);
+    socket.on("error", onError);
+
+    // Safety timeout
+    setTimeout(() => {
+      socket.removeListener("data",  onData);
+      socket.removeListener("error", onError);
+      if (buf.length > 0) settle(buf);
+      else reject(new Error("Keep-alive request timed out"));
+    }, 15000);
+  });
+}
+
 // ── Handler ────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
@@ -199,7 +392,7 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  const { method = "GET", url, headers = {}, body: reqBody = "" } = body;
+  const { method = "GET", url, headers = {}, body: reqBody = "", keepAlive = false } = body;
 
   if (!url) {
     return new Response(JSON.stringify({ error: "URL is required" }), {
@@ -248,7 +441,8 @@ export async function POST(req: NextRequest) {
         }
         const dnsDuration = Math.round(performance.now() - dnsStart);
         total += dnsDuration;
-        emit(controller, { type: "stage", id: "dns", status: "done", duration: dnsDuration, data: { ip, hostname } });
+        const dnsCached = dnsDuration < 3;
+        emit(controller, { type: "stage", id: "dns", status: "done", duration: dnsDuration, data: { ip, hostname, cached: dnsCached } });
 
         // ── 2. TCP ──────────────────────────────────────────────
         const tcpStart = performance.now();
@@ -282,42 +476,109 @@ export async function POST(req: NextRequest) {
           emit(controller, { type: "stage", id: "tls", status: "skipped", duration: 0 });
         }
 
-        // ── 4. HTTP request → TTFB → download ──────────────────
-        let downloadResult: Awaited<ReturnType<typeof sendHttpRequest>>;
+        // ── 4a. Request 1 ───────────────────────────────────────
+        // keepAlive mode uses the keep-alive parser for req 1 so the socket
+        // stays open; normal mode uses the original close-based parser.
+        const req = keepAlive ? sendHttpRequestKeepAlive : sendHttpRequest;
+
+        let downloadResult1: KeepAliveResult;
         try {
-          downloadResult = await sendHttpRequest(
+          downloadResult1 = await req(
             activeSocket,
             { method, hostname, port, path, headers, body: reqBody, isHttps },
             {
               onRequestSent: (raw, duration) => {
                 total += duration;
-                emit(controller, { type: "stage", id: "request", status: "done", duration, data: { raw } });
+                emit(controller, {
+                  type: "stage", id: "request", status: "done", duration,
+                  data: { raw }, ...(keepAlive ? { req: 1 } : {}),
+                });
               },
               onTtfb: (duration) => {
                 total += duration;
-                emit(controller, { type: "stage", id: "processing", status: "done", duration });
+                emit(controller, {
+                  type: "stage", id: "processing", status: "done", duration,
+                  ...(keepAlive ? { req: 1 } : {}),
+                });
               },
             }
-          );
+          ) as KeepAliveResult;
         } catch (err) {
           emit(controller, { type: "error", stage: "request", message: (err as Error).message });
           controller.close(); return;
         }
 
-        const { downloadDuration, downloadBytes, status, statusText, responseHeaders, responseBody } = downloadResult;
-        total += downloadDuration;
+        const { downloadDuration: dl1, downloadBytes: db1, status: st1,
+                statusText: stx1, responseHeaders: rh1, responseBody: rb1,
+                serverKeepAlive } = downloadResult1;
+        total += dl1;
         emit(controller, {
-          type: "stage", id: "response", status: "done", duration: downloadDuration,
-          data: { status, statusText, headers: responseHeaders, body: responseBody, bytes: downloadBytes },
+          type: "stage", id: "response", status: "done", duration: dl1,
+          data: { status: st1, statusText: stx1, headers: rh1, body: rb1, bytes: db1 },
+          ...(keepAlive ? { req: 1 } : {}),
         });
 
-        emit(controller, { type: "complete", total });
+        // ── 4b. Keep-alive: Request 2 (reuses socket) ───────────
+        if (keepAlive && serverKeepAlive && activeSocket && !activeSocket.destroyed) {
+          // Signal the frontend that the connection is being reused
+          emit(controller, {
+            type:       "keep_alive_reuse",
+            savedMs:    tcpDuration + (isHttps ? 0 : 0), // TLS ms is in stageData
+            ip,
+            port,
+          });
+
+          // DNS / TCP / TLS are all "reused" — emit them as 0ms skipped stages
+          emit(controller, { type: "stage", id: "dns", status: "reused", duration: 0, req: 2,
+            data: { ip, hostname, cached: true, reused: true } });
+          emit(controller, { type: "stage", id: "tcp", status: "reused", duration: 0, req: 2 });
+          emit(controller, { type: "stage", id: "tls", status: "reused", duration: 0, req: 2 });
+
+          let total2 = 0;
+          let downloadResult2: KeepAliveResult;
+          try {
+            downloadResult2 = await sendHttpRequestKeepAlive(
+              activeSocket,
+              { method, hostname, port, path, headers, body: reqBody, isHttps },
+              {
+                onRequestSent: (raw, duration) => {
+                  total2 += duration;
+                  emit(controller, {
+                    type: "stage", id: "request", status: "done", duration,
+                    data: { raw }, req: 2,
+                  });
+                },
+                onTtfb: (duration) => {
+                  total2 += duration;
+                  emit(controller, { type: "stage", id: "processing", status: "done", duration, req: 2 });
+                },
+              }
+            );
+          } catch (err) {
+            // Second request failed — not a fatal error for the session
+            emit(controller, { type: "error", stage: "request-2", message: (err as Error).message });
+            emit(controller, { type: "complete", total, keepAlive: false });
+            controller.close(); return;
+          }
+
+          const { downloadDuration: dl2, downloadBytes: db2, status: st2,
+                  statusText: stx2, responseHeaders: rh2, responseBody: rb2 } = downloadResult2;
+          total2 += dl2;
+          emit(controller, {
+            type: "stage", id: "response", status: "done", duration: dl2,
+            data: { status: st2, statusText: stx2, headers: rh2, body: rb2, bytes: db2 },
+            req: 2,
+          });
+          emit(controller, { type: "complete", total, total2, keepAlive: true });
+        } else {
+          emit(controller, { type: "complete", total });
+        }
+
         controller.close();
       } catch (err) {
         emit(controller, { type: "error", stage: "unknown", message: (err as Error).message });
         controller.close();
       } finally {
-        // Always release sockets on completion, failure, or early controller close.
         closeSocket(activeSocket);
         if (socket && socket !== activeSocket) closeSocket(socket);
       }
