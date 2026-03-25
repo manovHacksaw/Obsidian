@@ -253,7 +253,7 @@ export async function POST(req: NextRequest) {
       const lk = k.toLowerCase();
       if (lk === "host") continue;
       if (lk === "content-type" && reqBody) continue;
-      lines.push(`${k}: ${v}`);
+      lines.push(`${k}: ${v.replace(/[\r\n]+/g, " ")}`);
     }
     if (reqBody) {
       lines.push(`Content-Type: application/json`);

@@ -61,6 +61,7 @@ export function StageCard({
       realRows.push({ key: "cipher", value: d.cipher });
       realRows.push({ key: "issued by", value: d.cert.issuer });
       realRows.push({ key: "valid until", value: d.cert.validTo });
+      realRows.push({ key: "validation", value: "disabled — self-signed certs accepted (rejectUnauthorized: false)" });
     } else if (def.id === "request") {
       const d = sd as { raw: string };
       const firstLine = d.raw.split("\r\n")[0] ?? "";

@@ -120,7 +120,7 @@ function sendHttpRequest(
       const lk = k.toLowerCase();
       if (lk === "host") continue;
       if (lk === "content-type") continue; // handled below so we can apply the user's value or the default
-      lines.push(`${k}: ${v}`);
+      lines.push(`${k}: ${v.replace(/[\r\n]+/g, " ")}`);
     }
     if (body) {
       lines.push(`Content-Type: ${userContentType ?? "application/json"}`);
@@ -193,6 +193,28 @@ function sendHttpRequest(
   });
 }
 
+// ── Chunked transfer-encoding helpers ──────────────────────────
+// Parses chunk sizes rather than searching for the terminal chunk as a
+// substring — the old approach could false-positive on body content that
+// happens to contain "\r\n0\r\n\r\n".
+
+function isChunkedComplete(body: string): boolean {
+  let pos = 0;
+  while (pos < body.length) {
+    const crlfIdx = body.indexOf("\r\n", pos);
+    if (crlfIdx === -1) return false;
+    // Strip optional chunk extensions (e.g. "a; name=value")
+    const sizeStr   = body.slice(pos, crlfIdx).split(";")[0].trim();
+    const chunkSize = parseInt(sizeStr, 16);
+    if (isNaN(chunkSize) || chunkSize < 0) return false;
+    if (chunkSize === 0) return true; // terminal chunk reached
+    const dataEnd = crlfIdx + 2 + chunkSize;
+    if (body.length < dataEnd + 2) return false; // chunk data not yet complete
+    pos = dataEnd + 2; // advance past data + trailing \r\n
+  }
+  return false;
+}
+
 // ── Keep-alive request sender ──────────────────────────────────
 // Like sendHttpRequest but uses Connection: keep-alive and detects
 // end-of-response via Content-Length or chunked terminal chunk rather
@@ -236,7 +258,7 @@ function sendHttpRequestKeepAlive(
       const lk = k.toLowerCase();
       if (lk === "host" || lk === "connection") continue;
       if (lk === "content-type") continue; // handled below
-      lines.push(`${k}: ${v}`);
+      lines.push(`${k}: ${v.replace(/[\r\n]+/g, " ")}`);
     }
     if (body) {
       lines.push(`Content-Type: ${userContentType ?? "application/json"}`);
@@ -320,8 +342,7 @@ function sendHttpRequestKeepAlive(
       const body = raw.slice(sep + 4);
 
       if (te.includes("chunked")) {
-        // Wait for terminal chunk: 0\r\n\r\n
-        if (body.includes("\r\n0\r\n\r\n") || body.endsWith("0\r\n\r\n")) {
+        if (isChunkedComplete(body)) {
           socket.removeListener("data", onData);
           socket.removeListener("error", onError);
           settle(buf);

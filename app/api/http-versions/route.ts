@@ -171,7 +171,7 @@ function parseResponse(version: HttpVersion, raw: string, requestedClose: boolea
   const persistent = !requestedClose &&
     (headers["connection"]?.toLowerCase() === "keep-alive" || version === "1.1");
 
-  return { statusLine, headers, body, hasStatusLine: true, hasHeaders: true, persistent };
+  return { statusLine, headers, body: body.slice(0, 10240), hasStatusLine: true, hasHeaders: true, persistent };
 }
 
 // ────────────────────────────────────────────────────────────────
