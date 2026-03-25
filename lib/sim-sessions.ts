@@ -34,19 +34,46 @@ export interface SimSession {
   requestRaw?: string;
   // Expiry timer
   _timer: ReturnType<typeof setTimeout>;
+  // Called immediately when the first response byte arrives (replaces polling)
+  _firstByteResolve?: () => void;
 }
 
 // ── Global session store ────────────────────────────────────────
 // Stored on globalThis to survive Next.js hot-reload in dev.
+//
+// ⚠ SINGLE-INSTANCE ONLY
+// Sessions hold live TCP/TLS sockets. Sockets are OS resources tied to
+// the process that opened them — they cannot be serialized, shared via
+// Redis, or handed off to another process. In a multi-instance
+// deployment (e.g., Vercel serverless, horizontally scaled containers)
+// a step request routed to a different instance than the one that
+// created the session will fail with "session not found".
+//
+// This is an inherent constraint of step-mode: persistent connection
+// state requires a persistent process. Use `next dev` / `vercel dev`
+// (single process) for reliable step-mode operation. A horizontally
+// scalable design would require a WebSocket gateway or a dedicated
+// connection-broker process — out of scope for this educational tool.
 
 declare global {
   // eslint-disable-next-line no-var
   var __simSessions: Map<string, SimSession> | undefined;
+  // eslint-disable-next-line no-var
+  var __simSessionsWarnedVercel: boolean | undefined;
 }
 
 function getStore(): Map<string, SimSession> {
   if (!globalThis.__simSessions) {
     globalThis.__simSessions = new Map();
+  }
+  // Warn once per process when running on a known multi-instance platform
+  if (process.env.VERCEL && !globalThis.__simSessionsWarnedVercel) {
+    globalThis.__simSessionsWarnedVercel = true;
+    console.warn(
+      "[sim-sessions] Vercel detected. Step-mode sessions are stored in process memory " +
+      "and will not survive routing to a different serverless instance. " +
+      "Use a single-instance deployment for reliable step-mode operation."
+    );
   }
   return globalThis.__simSessions;
 }

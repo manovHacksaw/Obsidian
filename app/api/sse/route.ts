@@ -10,7 +10,10 @@ interface SSERequest {
   sessionStartedAt?: number;
   url?:              string;
   timeoutMs?:        number;
-  lastEventId?:      string;   // SSE reconnect — browser sends Last-Event-ID header
+  // Set on reconnect — ID of the last event the client received.
+  // Virtual mode: server skips already-delivered events and resumes from the next one.
+  // Real mode: forwarded as Last-Event-ID header to the upstream SSE server.
+  lastEventId?:      string;
 }
 
 // Virtual event definitions (mirrors constants.ts — kept inline to avoid
@@ -42,15 +45,11 @@ export async function POST(req: NextRequest) {
 
   // ── Virtual mode ─────────────────────────────────────────────
   if (mode === "virtual") {
-    const isReconnect = !!lastEventId;
-
     const stream = new ReadableStream({
       async start(controller) {
         const sessionStart = body.sessionStartedAt ?? Date.now();
 
         // 1. Connect phase — simulated as discrete DNS → TCP → TLS → Request steps
-        // On a reconnect the browser opens a brand-new TCP connection — same overhead,
-        // but the request now carries Last-Event-ID so the server can resume.
         emit(controller, { type: "phase", phase: "connect", status: "active" });
 
         const rand = (n: number) => Math.floor(Math.random() * n);
@@ -76,14 +75,14 @@ export async function POST(req: NextRequest) {
         const tlsMs = Math.round(performance.now() - tlsStart);
         emit(controller, { type: "lifecycle", step: "tls", status: "done", durationMs: tlsMs });
 
-        // HTTP request sent — on reconnect the Last-Event-ID header is included
+        // HTTP request sent — annotate with Last-Event-ID if this is a reconnect
         emit(controller, { type: "lifecycle", step: "request", status: "active" });
         const reqStart = performance.now();
         await new Promise<void>((r) => setTimeout(r, 3 + rand(5)));
         const reqMs = Math.round(performance.now() - reqStart);
         emit(controller, {
           type: "lifecycle", step: "request", status: "done", durationMs: reqMs,
-          ...(isReconnect ? { lastEventId } : {}),
+          ...(lastEventId ? { lastEventId } : {}),
         });
 
         const connectMs = dnsMs + tcpMs + tlsMs + reqMs;
@@ -110,41 +109,29 @@ export async function POST(req: NextRequest) {
 
         const sorted = [...VIRTUAL_EVENTS].sort((a, b) => a.delayMs - b.delayMs);
 
-        // On reconnect: find which events were already delivered before the disconnect.
-        // The server skips them — this is the core of the Last-Event-ID mechanism.
-        let resumeIdx = 0;
-        if (isReconnect && lastEventId) {
+        // Reconnect resume: find how many events were already delivered before lastEventId
+        let startIdx = 0;
+        if (lastEventId) {
           const lastIdx = sorted.findIndex((e) => e.id === lastEventId);
-          resumeIdx = lastIdx >= 0 ? lastIdx + 1 : 0;
-        }
-        const skippedCount = resumeIdx;
-        const toDeliver = sorted.slice(resumeIdx);
-
-        if (isReconnect) {
-          // Tell the client how many events were skipped so it can display the banner
+          if (lastIdx !== -1) {
+            startIdx = lastIdx + 1;
+          }
+          // Tell the client what was skipped so it can show the resume point
           emit(controller, {
-            type: "reconnect_resume",
+            type:           "reconnect_resume",
             lastEventId,
-            skippedCount,
-            resumingFromId: toDeliver[0]?.id ?? null,
+            skippedCount:   startIdx,
+            resumingFromId: startIdx < sorted.length ? sorted[startIdx].id : null,
           });
         }
 
-        for (let i = 0; i < toDeliver.length; i++) {
-          const evt = toDeliver[i];
-
-          if (!isReconnect) {
-            // Normal: wait until this event's absolute scheduled time
-            const elapsed   = Date.now() - sessionStart;
-            const remaining = evt.delayMs - elapsed;
-            if (remaining > 0) {
-              await new Promise<void>((r) => setTimeout(r, remaining));
-            }
-          } else {
-            // Reconnect: stagger replayed events 2s apart for visual clarity
-            await new Promise<void>((r) => setTimeout(r, (i + 1) * 2000));
+        for (const evt of sorted.slice(startIdx)) {
+          // Wait until this event's scheduled delay has passed (from session start)
+          const elapsed   = Date.now() - sessionStart;
+          const remaining = evt.delayMs - elapsed;
+          if (remaining > 0) {
+            await new Promise<void>((r) => setTimeout(r, remaining));
           }
-
           const elapsedMs = Date.now() - sessionStart;
           emit(controller, {
             type:      "event",
@@ -201,6 +188,8 @@ export async function POST(req: NextRequest) {
             "Accept":        "text/event-stream",
             "Cache-Control": "no-cache",
             "User-Agent":    "ObsidianSim/1.0",
+            // Forward Last-Event-ID so the upstream server can resume the stream
+            ...(lastEventId ? { "Last-Event-ID": lastEventId } : {}),
           },
         });
       } catch (err) {
@@ -220,8 +209,11 @@ export async function POST(req: NextRequest) {
       const contentType = fetchRes.headers.get("content-type") ?? "";
       const isSSE       = contentType.includes("text/event-stream");
 
-      emit(controller, { type: "lifecycle", step: "connect", status: "done", durationMs: connectMs });
-      emit(controller, { type: "phase",     phase: "connect", status: "done", durationMs: connectMs });
+      emit(controller, {
+        type: "lifecycle", step: "connect", status: "done", durationMs: connectMs,
+        ...(lastEventId ? { lastEventId } : {}),
+      });
+      emit(controller, { type: "phase", phase: "connect", status: "done", durationMs: connectMs });
 
       // Emit actual response headers for the headers panel
       const responseHeaders: Record<string, string> = {};
@@ -285,9 +277,6 @@ export async function POST(req: NextRequest) {
           if (done) break;
 
           buffer += decoder.decode(value, { stream: true });
-          // SSE allows \r\n, \r, or \n as line terminators (RFC 8895 §9.1).
-          // Normalize to \n so the split below works against all origins.
-          buffer = buffer.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
           const lines = buffer.split("\n");
           buffer = lines.pop() ?? "";
 

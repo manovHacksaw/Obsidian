@@ -3,6 +3,7 @@ import * as dns from "node:dns";
 import * as net from "node:net";
 import * as tls from "node:tls";
 import { performance } from "node:perf_hooks";
+import { isBlockedIp } from "@/lib/ip-guard";
 
 export const runtime = "nodejs";
 // ⚠ Vercel Pro: export const maxDuration = 30
@@ -184,6 +185,13 @@ export async function POST(req: NextRequest) {
         const durationMs = Math.round(performance.now() - connectStart);
         emit(controller, { type: "phase", phase: "connect", status: "error", durationMs });
         emit(controller, { type: "error", message: (err as Error).message });
+        controller.close(); return;
+      }
+
+      if (isBlockedIp(ip)) {
+        const durationMs = Math.round(performance.now() - connectStart);
+        emit(controller, { type: "phase", phase: "connect", status: "error", durationMs });
+        emit(controller, { type: "error", message: "Target resolves to a private or reserved IP address" });
         controller.close(); return;
       }
 

@@ -78,6 +78,14 @@ interface Bar {
   blocked:    boolean;
 }
 
+interface LiveResult {
+  path:       string;
+  sentMs:     number;
+  receivedMs: number;
+}
+
+type LivePhase = "idle" | "hol" | "parallel" | "done" | "error";
+
 // ── Constants ────────────────────────────────────────────────────
 
 const H1_BARS   = computeH1Bars();
@@ -369,6 +377,238 @@ function HOLCallout({ visible }: { visible: boolean }) {
   );
 }
 
+// ── Live TCP Demo components ──────────────────────────────────────
+
+const LIVE_PATHS    = ["/slow", "/fast1", "/fast2"] as const;
+const LIVE_MAX_MS   = 2500;
+const LIVE_COLORS: Record<string, string> = {
+  "/slow":  "#ef4444",
+  "/fast1": "#10b981",
+  "/fast2": "#3b82f6",
+};
+
+function LiveTimeline({
+  label,
+  subtitle,
+  accentColor,
+  isActive,
+  results,
+  baselineMs,
+}: {
+  label:       string;
+  subtitle:    string;
+  accentColor: string;
+  isActive:    boolean;
+  results:     LiveResult[];
+  baselineMs:  number;
+}) {
+  return (
+    <div
+      className="flex-1 rounded-sm overflow-hidden"
+      style={{
+        border:          `1px solid ${isActive ? accentColor + "44" : "rgba(255,255,255,0.06)"}`,
+        backgroundColor: "#0c0c0c",
+      }}
+    >
+      <div
+        className="px-3 py-2 border-b border-white/[0.06]"
+        style={{ backgroundColor: isActive ? accentColor + "0a" : "transparent" }}
+      >
+        <div
+          className="text-[9px] font-bold font-body uppercase tracking-[0.2em]"
+          style={{ color: accentColor + "aa" }}
+        >
+          {label}
+        </div>
+        <div className="text-[9px] font-body text-[#3a3939] mt-0.5">{subtitle}</div>
+      </div>
+
+      <div className="px-3 py-2 space-y-1.5">
+        {/* Ruler */}
+        <div className="relative h-3 mb-0.5">
+          <div className="absolute bottom-0 inset-x-0 h-px bg-white/[0.04]" />
+          {[0, 1000, 2000].map((ms) => (
+            <div
+              key={ms}
+              className="absolute bottom-0 flex flex-col items-center"
+              style={{ left: `${(ms / LIVE_MAX_MS) * 100}%` }}
+            >
+              <span className="text-[7px] font-mono text-[#282828] -translate-x-1/2 mb-1">
+                {ms === 0 ? "0" : `${ms / 1000}s`}
+              </span>
+              <div className="w-px h-1.5 bg-white/[0.04]" />
+            </div>
+          ))}
+        </div>
+
+        {/* Rows */}
+        {LIVE_PATHS.map((path) => {
+          const result    = results.find((r) => r.path === path);
+          const displayMs = result ? Math.max(0, result.receivedMs - baselineMs) : 0;
+          const fraction  = result ? Math.min(1, displayMs / LIVE_MAX_MS) : 0;
+          const c         = LIVE_COLORS[path];
+          const isPending = !result && isActive;
+          return (
+            <div key={path} className="flex items-center gap-2 h-5">
+              <span className="text-[9px] font-mono text-[#494847] w-12 shrink-0">{path}</span>
+              <div
+                className="flex-1 relative h-3.5 rounded-[2px] overflow-hidden"
+                style={{ backgroundColor: "rgba(255,255,255,0.02)" }}
+              >
+                {result ? (
+                  <div
+                    className="absolute inset-y-0 left-0 rounded-[2px]"
+                    style={{ width: `${fraction * 100}%`, backgroundColor: c, opacity: 0.75 }}
+                  />
+                ) : isPending ? (
+                  <motion.div
+                    className="absolute inset-y-0 w-8 rounded-[2px]"
+                    style={{ backgroundColor: c + "40" }}
+                    animate={{ left: ["0%", "80%", "0%"] }}
+                    transition={{ repeat: Infinity, duration: 1.4, ease: "easeInOut" }}
+                  />
+                ) : null}
+              </div>
+              <span
+                className="text-[9px] font-mono w-14 shrink-0 text-right"
+                style={{ color: result ? c : "#333" }}
+              >
+                {result ? `${displayMs}ms` : isPending ? "…" : "—"}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function LiveDemoPanel({
+  livePhase,
+  holResults,
+  parallelResults,
+  holBaseMs,
+  parallelBaseMs,
+  onRun,
+}: {
+  livePhase:       LivePhase;
+  holResults:      LiveResult[];
+  parallelResults: LiveResult[];
+  holBaseMs:       number;
+  parallelBaseMs:  number;
+  onRun:           () => void;
+}) {
+  const isRunning  = livePhase === "hol" || livePhase === "parallel";
+  const isDone     = livePhase === "done";
+  const holFast1   = holResults.find((r) => r.path === "/fast1");
+  const parFast1   = parallelResults.find((r) => r.path === "/fast1");
+  const holWaitMs  = holFast1 ? holFast1.receivedMs  - holBaseMs      : 0;
+  const parWaitMs  = parFast1 ? parFast1.receivedMs  - parallelBaseMs : 0;
+  const savedMs    = holWaitMs - parWaitMs;
+
+  return (
+    <div className="border border-white/[0.06] rounded-sm overflow-hidden bg-[#0a0a0a]">
+      {/* Header */}
+      <div className="px-4 py-2.5 border-b border-white/[0.06] flex items-center gap-3">
+        <span className="material-symbols-outlined text-[#ff8f6f]/60" style={{ fontSize: "14px" }}>
+          cable
+        </span>
+        <div className="flex-1">
+          <span className="text-[10px] font-bold font-body text-white/70">Live TCP Demo</span>
+          <span className="ml-2 text-[9px] font-body text-[#3a3939]">
+            real loopback server · real sockets · actual blocking
+          </span>
+        </div>
+        <button
+          onClick={onRun}
+          disabled={isRunning}
+          className={`flex items-center gap-1.5 px-3 py-1 rounded-[2px] text-[9px] font-bold font-body uppercase tracking-[0.15em] transition-all ${
+            isRunning
+              ? "bg-[#1a1919] text-[#333] cursor-not-allowed"
+              : isDone
+                ? "bg-[#ff8f6f]/10 text-[#ff8f6f] hover:bg-[#ff8f6f]/20 border border-[#ff8f6f]/20"
+                : "bg-[#ff8f6f] text-[#5c1400] hover:bg-[#ff7851]"
+          }`}
+        >
+          {isRunning ? (
+            <>
+              <motion.span
+                className="w-1 h-1 rounded-full bg-[#ff8f6f]"
+                animate={{ opacity: [1, 0.3, 1] }}
+                transition={{ repeat: Infinity, duration: 0.7 }}
+              />
+              {livePhase === "hol" ? "HOL phase…" : "Parallel phase…"}
+            </>
+          ) : (
+            <>
+              <span className="material-symbols-outlined" style={{ fontSize: "11px" }}>
+                play_arrow
+              </span>
+              {isDone ? "Run Again" : "Run Demo"}
+            </>
+          )}
+        </button>
+      </div>
+
+      {/* Body */}
+      {livePhase === "idle" ? (
+        <div className="px-4 py-4 text-center">
+          <p className="text-[9px] font-body text-[#3a3939] leading-relaxed max-w-md mx-auto">
+            Spins up a real TCP server on localhost, sends three pipelined requests on one
+            connection to show HOL blocking, then repeats with three parallel connections.
+            These are actual socket timings — not a simulation.
+          </p>
+        </div>
+      ) : (
+        <div className="px-4 py-3 flex gap-4">
+          <LiveTimeline
+            label="One Connection (HOL)"
+            subtitle="pipelined — /fast1 &amp; /fast2 wait behind /slow"
+            accentColor="#ef4444"
+            isActive={livePhase === "hol"}
+            results={holResults}
+            baselineMs={holBaseMs}
+          />
+          <LiveTimeline
+            label="Three Connections"
+            subtitle="one request per socket — all launched simultaneously"
+            accentColor="#10b981"
+            isActive={livePhase === "parallel"}
+            results={parallelResults}
+            baselineMs={parallelBaseMs}
+          />
+        </div>
+      )}
+
+      {/* Insight footer */}
+      {isDone && holFast1 && parFast1 && (
+        <div
+          className="px-4 py-2 text-[9px] font-body text-[#494847]"
+          style={{ borderTop: "1px solid rgba(255,255,255,0.04)" }}
+        >
+          <span className="font-mono" style={{ color: LIVE_COLORS["/fast1"] }}>/fast1</span>
+          {" "}waited{" "}
+          <span className="font-mono text-white/40">{holWaitMs}ms</span>
+          {" "}on one connection vs{" "}
+          <span className="font-mono text-[#10b981]">{parWaitMs}ms</span>
+          {" "}on a dedicated socket —{" "}
+          <span className="font-mono text-[#ff8f6f]">{savedMs}ms</span>
+          {" "}wasted behind{" "}
+          <span className="font-mono" style={{ color: LIVE_COLORS["/slow"] }}>/slow</span>
+          . This is HOL blocking: the fast responses existed on the server, but the protocol
+          forced them to queue.
+        </div>
+      )}
+
+      {livePhase === "error" && (
+        <div className="px-4 py-2 text-[9px] font-mono text-red-400/60">
+          Demo failed — loopback server error. Check console.
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Page ─────────────────────────────────────────────────────────
 
 type SimState = "idle" | "running" | "done";
@@ -377,8 +617,16 @@ export default function HOLPage() {
   const [simState,  setSimState]  = useState<SimState>("idle");
   const [elapsedMs, setElapsedMs] = useState(0);
 
+  // Live demo state
+  const [livePhase,       setLivePhase]       = useState<LivePhase>("idle");
+  const [holResults,      setHolResults]      = useState<LiveResult[]>([]);
+  const [parallelResults, setParallelResults] = useState<LiveResult[]>([]);
+  const [holBaseMs,       setHolBaseMs]       = useState(0);
+  const [parallelBaseMs,  setParallelBaseMs]  = useState(0);
+
   const startTimeRef = useRef<number>(0);
   const rafRef       = useRef<number>(0);
+  const liveAbortRef = useRef<AbortController | null>(null);
 
   const h1Done = elapsedMs >= H1_TOTAL;
   const h2Done = elapsedMs >= H2_TOTAL;
@@ -412,7 +660,78 @@ export default function HOLPage() {
     setElapsedMs(0);
   }, []);
 
-  useEffect(() => () => cancelAnimationFrame(rafRef.current), []);
+  const runLiveDemo = useCallback(async () => {
+    liveAbortRef.current?.abort();
+    const abort = new AbortController();
+    liveAbortRef.current = abort;
+
+    setLivePhase("hol");
+    setHolResults([]);
+    setParallelResults([]);
+    setHolBaseMs(0);
+    setParallelBaseMs(0);
+
+    let holFirstSentMs      = -1;
+    let parallelFirstSentMs = -1;
+
+    try {
+      const res = await fetch("/api/hol", { signal: abort.signal });
+      if (!res.body) return;
+      const reader  = res.body.getReader();
+      const decoder = new TextDecoder();
+      let   buf     = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const parts = buf.split("\n\n");
+        buf = parts.pop() ?? "";
+
+        for (const part of parts) {
+          const dataLine = part.split("\n").find((l) => l.startsWith("data: "));
+          if (!dataLine) continue;
+          let event: Record<string, unknown>;
+          try { event = JSON.parse(dataLine.slice(6)); } catch { continue; }
+
+          if (event.type === "phase" && event.phase === "parallel" && event.status === "start") {
+            setLivePhase("parallel");
+          } else if (event.type === "request_sent") {
+            const sentMs = event.sentMs as number;
+            if (event.phase === "hol" && holFirstSentMs === -1) {
+              holFirstSentMs = sentMs;
+              setHolBaseMs(sentMs);
+            } else if (event.phase === "parallel" && parallelFirstSentMs === -1) {
+              parallelFirstSentMs = sentMs;
+              setParallelBaseMs(sentMs);
+            }
+          } else if (event.type === "response_received") {
+            const result: LiveResult = {
+              path:       event.path       as string,
+              sentMs:     event.sentMs     as number,
+              receivedMs: event.receivedMs as number,
+            };
+            if (event.phase === "hol") {
+              setHolResults((prev) => [...prev, result]);
+            } else if (event.phase === "parallel") {
+              setParallelResults((prev) => [...prev, result]);
+            }
+          } else if (event.type === "done") {
+            setLivePhase("done");
+          } else if (event.type === "error") {
+            setLivePhase("error");
+          }
+        }
+      }
+    } catch (err) {
+      if ((err as Error).name !== "AbortError") setLivePhase("error");
+    }
+  }, []);
+
+  useEffect(() => () => {
+    cancelAnimationFrame(rafRef.current);
+    liveAbortRef.current?.abort();
+  }, []);
 
   const isRunning = simState === "running";
   const isDone    = simState === "done";
@@ -569,6 +888,16 @@ export default function HOLPage() {
 
         {/* Explanations */}
         <HOLCallout visible={isDone} />
+
+        {/* Live TCP Demo */}
+        <LiveDemoPanel
+          livePhase={livePhase}
+          holResults={holResults}
+          parallelResults={parallelResults}
+          holBaseMs={holBaseMs}
+          parallelBaseMs={parallelBaseMs}
+          onRun={runLiveDemo}
+        />
 
         {/* Resource legend */}
         {simState !== "idle" && (

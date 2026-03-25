@@ -67,8 +67,10 @@ export function StageCard({
       const byteLen = new TextEncoder().encode(d.raw).length;
       realRows.push({ key: "line", value: firstLine, accent: true });
       realRows.push({ key: "size", value: `${byteLen} bytes` });
+      realRows.push({ key: "timing", value: "OS buffer write — network transit is inside TTFB" });
     } else if (def.id === "processing") {
       realRows.push({ key: "ttfb", value: `${result?.duration ?? 0}ms`, accent: true });
+      realRows.push({ key: "includes", value: "request transit + server work + first byte transit" });
     } else if (def.id === "response") {
       const d = sd as { status: number; statusText: string; headers: Record<string, string>; bytes: number };
       realRows.push({ key: "status", value: `${d.status} ${d.statusText}`, accent: true });

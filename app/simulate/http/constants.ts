@@ -88,21 +88,28 @@ export const STAGE_DEFS: { id: StageId; label: string; realLabel?: string; desc:
   { id: "dns",        label: "DNS Resolution",   desc: "Resolving hostname to IP",           realDesc: "OS resolver → actual A record lookup",    direction: "→" },
   { id: "tcp",        label: "TCP Handshake",     desc: "SYN → SYN-ACK → ACK",               realDesc: "Real 3-way handshake, measured in ms",    direction: "→" },
   { id: "tls",        label: "TLS Handshake",     desc: "Certificate negotiation",            realDesc: "ClientHello → ServerHello → cert chain",  direction: "→" },
-  { id: "request",    label: "HTTP Request",      desc: "Method, path, headers sent",         realDesc: "Raw HTTP/1.1 written to socket",          direction: "→" },
+  { id: "request",    label: "HTTP Request",      desc: "Method, path, headers sent",         realDesc: "Bytes written to OS send buffer — actual network transit is inside TTFB",          direction: "→" },
   {
     id: "processing", label: "Server Processing", realLabel: "TTFB",
     desc: "Route matched, response generated",
-    // TTFB (Time To First Byte) = server processing + response headers travelling
-    // back through the network. The client cannot separate these two — it only
-    // observes the moment the first byte of the response arrives.
-    realDesc: "Time to First Byte — server processing + network transit for response header",
+    // TTFB (Time To First Byte) = request network transit + server processing +
+    // response header network transit. The client cannot separate these three —
+    // it only observes the moment the first byte of the response arrives.
+    realDesc: "TTFB = request transit + server processing + first response byte transit — all three are indistinguishable from the client",
     direction: "⚙",
   },
   { id: "response",   label: "HTTP Response",     desc: "Status + headers + body returned",   realDesc: "Download time, full body received",       direction: "←" },
 ];
 
+// Virtual base timings calibrated to real-world P50 values:
+// DNS: 35ms (uncached OS resolver, typical recursive lookup)
+// TCP: 28ms (regional CDN edge — distant servers 80–200ms)
+// TLS: 45ms (TLS 1.3 1-RTT; TLS 1.2 adds another ~45ms)
+// request: 0ms (OS buffer write, not network transit — see TTFB)
+// processing: 120ms (median TTFB across public APIs)
+// response: 20ms (small JSON body download)
 export const STAGE_BASE_MS: Record<StageId, number> = {
-  dns: 18, tcp: 42, tls: 78, request: 8, processing: 0, response: 15,
+  dns: 35, tcp: 28, tls: 45, request: 0, processing: 120, response: 20,
 };
 
 export const STAGE_BAR_COLORS: Record<StageId, string> = {

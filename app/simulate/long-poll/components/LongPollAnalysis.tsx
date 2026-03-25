@@ -193,7 +193,10 @@ export function LongPollAnalysis({
             })}
           </div>
           <p className="text-[9px] font-body text-[#2e2e2e] mt-2 leading-relaxed">
-            The <span className="text-amber-400/60 font-bold">hold</span> phase dominates — that&apos;s the server waiting for an event. Connect and respond are just connection overhead.
+            The <span className="text-amber-400/60 font-bold">hold</span> phase dominates — time from request sent to first byte received (TTFB).
+            {mode === "real" && (
+              <span className="text-[#2a2a2a]"> In real mode this is TTFB only — a slow server and a genuine long-poll server are indistinguishable on the wire.</span>
+            )}
           </p>
         </div>
 
@@ -232,7 +235,9 @@ export function LongPollAnalysis({
               {
                 icon: "timer",
                 color: "text-amber-400/70",
-                text: `Average hold: ${avgHoldMs}ms. Server held each connection open before responding or timing out at ${timeoutMs / 1000}s.`,
+                text: mode === "real"
+                  ? `Avg TTFB: ${avgHoldMs}ms — time from request to first byte. Long-polling servers intentionally delay this; a slow server produces the same measurement.`
+                  : `Average hold: ${avgHoldMs}ms. Virtual server held each connection open before firing the event.`,
               },
               ...(timeoutRate > 60 ? [{
                 icon: "info",

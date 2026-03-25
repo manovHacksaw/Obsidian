@@ -3,6 +3,7 @@ import * as dns from "node:dns";
 import * as net from "node:net";
 import * as tls from "node:tls";
 import { performance } from "node:perf_hooks";
+import { isBlockedIp } from "@/lib/ip-guard";
 
 export const runtime = "nodejs";
 
@@ -114,14 +115,15 @@ function sendHttpRequest(
       `User-Agent: ObsidianSim/1.0`,
       `Accept: */*`,
     ];
+    const userContentType = Object.entries(headers).find(([k]) => k.toLowerCase() === "content-type")?.[1];
     for (const [k, v] of Object.entries(headers)) {
       const lk = k.toLowerCase();
       if (lk === "host") continue;
-      if (lk === "content-type" && body) continue; // avoid duplicate; added below
+      if (lk === "content-type") continue; // handled below so we can apply the user's value or the default
       lines.push(`${k}: ${v}`);
     }
     if (body) {
-      lines.push(`Content-Type: application/json`);
+      lines.push(`Content-Type: ${userContentType ?? "application/json"}`);
       lines.push(`Content-Length: ${Buffer.byteLength(body, "utf8")}`);
     }
     const requestRaw = lines.join("\r\n") + "\r\n\r\n" + (body ?? "");
@@ -229,14 +231,15 @@ function sendHttpRequestKeepAlive(
       `User-Agent: ObsidianSim/1.0`,
       `Accept: */*`,
     ];
+    const userContentType = Object.entries(headers).find(([k]) => k.toLowerCase() === "content-type")?.[1];
     for (const [k, v] of Object.entries(headers)) {
       const lk = k.toLowerCase();
       if (lk === "host" || lk === "connection") continue;
-      if (lk === "content-type" && body) continue;
+      if (lk === "content-type") continue; // handled below
       lines.push(`${k}: ${v}`);
     }
     if (body) {
-      lines.push(`Content-Type: application/json`);
+      lines.push(`Content-Type: ${userContentType ?? "application/json"}`);
       lines.push(`Content-Length: ${Buffer.byteLength(body, "utf8")}`);
     }
     const requestRaw = lines.join("\r\n") + "\r\n\r\n" + (body ?? "");
@@ -440,9 +443,12 @@ export async function POST(req: NextRequest) {
           controller.close(); return;
         }
         const dnsDuration = Math.round(performance.now() - dnsStart);
+        if (isBlockedIp(ip)) {
+          emit(controller, { type: "error", stage: "dns", message: "Target resolves to a private or reserved IP address" });
+          controller.close(); return;
+        }
         total += dnsDuration;
-        const dnsCached = dnsDuration < 3;
-        emit(controller, { type: "stage", id: "dns", status: "done", duration: dnsDuration, data: { ip, hostname, cached: dnsCached } });
+        emit(controller, { type: "stage", id: "dns", status: "done", duration: dnsDuration, data: { ip, hostname } });
 
         // ── 2. TCP ──────────────────────────────────────────────
         const tcpStart = performance.now();
@@ -457,6 +463,7 @@ export async function POST(req: NextRequest) {
 
         // ── 3. TLS (HTTPS only) ─────────────────────────────────
         activeSocket = socket;
+        let tlsDuration = 0;
         if (isHttps) {
           const tlsStart = performance.now();
           let tlsData: { socket: tls.TLSSocket; cert: CertInfo; cipher: string; version: string };
@@ -465,7 +472,7 @@ export async function POST(req: NextRequest) {
             emit(controller, { type: "error", stage: "tls", message: (err as Error).message });
             controller.close(); return;
           }
-          const tlsDuration = Math.round(performance.now() - tlsStart);
+          tlsDuration = Math.round(performance.now() - tlsStart);
           total += tlsDuration;
           emit(controller, {
             type: "stage", id: "tls", status: "done", duration: tlsDuration,
@@ -523,7 +530,7 @@ export async function POST(req: NextRequest) {
           // Signal the frontend that the connection is being reused
           emit(controller, {
             type:       "keep_alive_reuse",
-            savedMs:    tcpDuration + (isHttps ? 0 : 0), // TLS ms is in stageData
+            savedMs:    tcpDuration + tlsDuration,
             ip,
             port,
           });

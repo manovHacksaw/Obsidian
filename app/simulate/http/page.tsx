@@ -57,7 +57,7 @@ function matchPath(pattern: string, path: string): { match: boolean; params: Rec
   return { match: true, params };
 }
 
-function jitter(base: number) { return Math.max(5, base + Math.floor(Math.random() * 12) - 6); }
+function jitter(base: number, min = 5) { return Math.max(min, base + Math.floor(Math.random() * 12) - 6); }
 
 // ── Component ──────────────────────────────────────────────────
 
@@ -233,7 +233,9 @@ export default function HttpSimulatePage() {
 
     for (let i = 0; i < stagesToRun.length; i++) {
       const def = stagesToRun[i];
-      const dur = def.id === "processing" ? (matched?.route.delay ?? 100) : jitter(STAGE_BASE_MS[def.id]);
+      const dur = def.id === "processing" ? (matched?.route.delay ?? 100)
+                : def.id === "request"    ? jitter(STAGE_BASE_MS[def.id], 0)
+                : jitter(STAGE_BASE_MS[def.id]);
 
       setCurrentIdx(i);
       const r: StageResult = { id: def.id, status: "active", duration: 0 };

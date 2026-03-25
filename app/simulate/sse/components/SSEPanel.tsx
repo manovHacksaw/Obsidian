@@ -273,6 +273,20 @@ export function SSEPanel({
         </div>
       </div>
 
+      {/* ── Real-mode protocol transparency callout ── */}
+      {sseMode === "real" && lifecycleSteps.some((s) => s.id === "connect" && s.status === "done") && (
+        <div className="mx-4 mt-2 mb-1 px-3 py-2 rounded-sm border border-white/[0.04] bg-[#0f0f0f]">
+          <p className="text-[9px] font-body text-[#3a3939] leading-relaxed">
+            <span className="text-[#494847]">Connect phase</span> bundles DNS + TCP + TLS + HTTP request into one timing —
+            Node.js <span className="font-mono text-[#333]">fetch()</span> does not expose individual steps.
+            To see each layer separately, use the{" "}
+            <a href="/simulate/http" className="text-[#ff8f6f]/50 hover:text-[#ff8f6f]/80 underline underline-offset-2 transition-colors">
+              HTTP Lifecycle simulator
+            </a>.
+          </p>
+        </div>
+      )}
+
       {/* ── Non-SSE callout ── */}
       <AnimatePresence>
         {isHttp && connectionInfo && (
