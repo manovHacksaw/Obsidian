@@ -1,9 +1,10 @@
 import { NextRequest } from "next/server";
-import * as net  from "net";
-import * as tls  from "tls";
-import * as dns  from "dns/promises";
+import * as net    from "net";
+import * as tls    from "tls";
+import * as dns    from "dns/promises";
 import * as crypto from "crypto";
-import { isBlockedIp } from "@/lib/ip-guard";
+import { isBlockedIp }                                    from "@/lib/ip-guard";
+import { createWsSession, attachEchoHandler, injectData } from "@/lib/ws-sessions";
 
 export const runtime = "nodejs";
 
@@ -15,8 +16,8 @@ function generateKey(): string {
 }
 
 function computeAccept(key: string): { sha1Hex: string; accept: string } {
-  const input  = key + WS_GUID;
-  const sha1   = crypto.createHash("sha1").update(input);
+  const input   = key + WS_GUID;
+  const sha1    = crypto.createHash("sha1").update(input);
   const sha1Hex = sha1.copy().digest("hex");
   const accept  = sha1.digest("base64");
   return { sha1Hex, accept };
@@ -36,22 +37,37 @@ function buildUpgradeRequest(host: string, path: string, key: string): string {
   ].join("\r\n");
 }
 
-// Read from socket until the HTTP header block ends (\r\n\r\n)
-function readHeaders(socket: net.Socket | tls.TLSSocket, timeoutMs = 10_000): Promise<string> {
+// Read from socket until the HTTP header block ends (\r\n\r\n).
+// Returns the header string AND any bytes that arrived in the same TCP chunk
+// after the boundary (WebSocket frames that the server sent immediately).
+function readHeaders(
+  socket: net.Socket | tls.TLSSocket,
+  timeoutMs = 10_000,
+): Promise<{ raw: string; leftover: Buffer }> {
   return new Promise((resolve) => {
-    let buf = "";
-    const tid = setTimeout(() => resolve(buf), timeoutMs);
+    const chunks: Buffer[] = [];
+    const tid = setTimeout(() => {
+      socket.off("data", onData);
+      resolve({ raw: Buffer.concat(chunks).toString("latin1"), leftover: Buffer.alloc(0) });
+    }, timeoutMs);
 
     function onData(chunk: Buffer) {
-      buf += chunk.toString("latin1");
-      if (buf.includes("\r\n\r\n")) {
+      chunks.push(chunk);
+      const buf = Buffer.concat(chunks);
+      const str = buf.toString("latin1");
+      const idx = str.indexOf("\r\n\r\n");
+      if (idx !== -1) {
         clearTimeout(tid);
         socket.off("data", onData);
-        resolve(buf.slice(0, buf.indexOf("\r\n\r\n") + 4));
+        const headerEnd = idx + 4;
+        resolve({
+          raw:      str.slice(0, headerEnd),
+          leftover: buf.subarray(headerEnd),
+        });
       }
     }
     socket.on("data", onData);
-    socket.once("error", () => { clearTimeout(tid); resolve(buf); });
+    socket.once("error", () => { clearTimeout(tid); resolve({ raw: "", leftover: Buffer.alloc(0) }); });
   });
 }
 
@@ -77,22 +93,28 @@ export async function POST(req: NextRequest) {
       function emit(event: Record<string, unknown>) {
         try {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
-        } catch {}
+        } catch { /* ignore — client may have disconnected */ }
       }
 
       const sessionStart = Date.now();
 
       // ── Virtual mode ───────────────────────────────────────────────
       if (mode === "virtual") {
-        // Spin up a real loopback TCP server that handles the HTTP upgrade.
-        // This means the key derivation, 101 response, and raw bytes are all
-        // genuine — not reconstructed from known values.
+        // Spin up a real loopback TCP server. After the HTTP upgrade it stays alive
+        // and echoes WebSocket frames back to the client — making it a real echo server.
 
-        const server = net.createServer((serverSocket) => {
+        let capturedSs: net.Socket | null = null;
+
+        const server = net.createServer((ss) => {
+          capturedSs = ss;
           let buf = "";
-          serverSocket.on("data", (chunk) => {
+
+          function onHandshakeData(chunk: Buffer) {
             buf += chunk.toString("latin1");
             if (!buf.includes("\r\n\r\n")) return;
+
+            // Remove this handler — WebSocket frame data must not feed into it
+            ss.off("data", onHandshakeData);
 
             const keyMatch = buf.match(/Sec-WebSocket-Key:\s*(.+)\r\n/i);
             const key      = keyMatch?.[1]?.trim() ?? "";
@@ -107,9 +129,15 @@ export async function POST(req: NextRequest) {
               "",
             ].join("\r\n");
 
-            serverSocket.write(response, "latin1");
-          });
-          serverSocket.on("error", () => {});
+            ss.write(response, "latin1");
+
+            // Attach WebSocket echo handler to the server socket.
+            // The session's frame parser handles the client socket (sock) separately.
+            attachEchoHandler(ss);
+          }
+
+          ss.on("data", onHandshakeData);
+          ss.on("error", () => {});
         });
 
         await new Promise<void>((res, rej) => {
@@ -149,36 +177,55 @@ export async function POST(req: NextRequest) {
           raw:     upgradeRequest,
           key,
           headers: {
-            "Upgrade":              "websocket",
-            "Connection":           "Upgrade",
-            "Sec-WebSocket-Key":    key,
+            "Upgrade":               "websocket",
+            "Connection":            "Upgrade",
+            "Sec-WebSocket-Key":     key,
             "Sec-WebSocket-Version": "13",
           },
         });
 
         sock.write(upgradeRequest, "latin1");
-        const responseRaw = await readHeaders(sock);
+        const { raw: responseRaw, leftover } = await readHeaders(sock);
 
         emit({
           type:       "handshake_response",
           raw:        responseRaw,
           statusCode: 101,
           accept,
-          derivation: {
-            key,
-            guid:     WS_GUID,
-            input:    key + WS_GUID,
-            sha1Hex,
-            accept,
-          },
-          elapsedMs: Date.now() - sessionStart,
+          derivation: { key, guid: WS_GUID, input: key + WS_GUID, sha1Hex, accept },
+          elapsedMs:  Date.now() - sessionStart,
         });
 
         emit({ type: "phase", phase: "handshake", status: "done" });
-        emit({ type: "connected", elapsedMs: Date.now() - sessionStart });
 
-        sock.destroy();
-        server.close();
+        // ── Keep socket alive: create session ──
+        const sessionId = crypto.randomUUID();
+        const session = createWsSession(sessionId, sock, server);
+        if (leftover.length > 0) injectData(session, leftover);
+
+        // Virtual server sends a greeting right away so the server → client
+        // direction is visible without needing to send something first.
+        // setImmediate defers one tick so createWsSession's data handler
+        // is guaranteed to be attached to sock before the frame arrives.
+        setImmediate(() => {
+          if (capturedSs && !capturedSs.destroyed) {
+            const text = "Virtual echo server connected — I will echo everything you send.";
+            const payload = Buffer.from(text, "utf8");
+            // Unmasked text frame: FIN=1, opcode=0x01, MASK=0, len ≤ 125
+            capturedSs.write(Buffer.concat([Buffer.from([0x81, payload.length]), payload]));
+          }
+        });
+
+        // After 5s, send a ping so learners can see the ping/pong keepalive exchange.
+        // Unmasked ping frame: FIN=1, opcode=0x09, MASK=0
+        setTimeout(() => {
+          if (capturedSs && !capturedSs.destroyed) {
+            const pingPayload = Buffer.from("keepalive");
+            capturedSs.write(Buffer.concat([Buffer.from([0x89, pingPayload.length]), pingPayload]));
+          }
+        }, 5000);
+
+        emit({ type: "connected", sessionId, elapsedMs: Date.now() - sessionStart });
         emit({ type: "done" });
         controller.close();
         return;
@@ -201,10 +248,10 @@ export async function POST(req: NextRequest) {
         return;
       }
 
-      const isWss     = parsed.protocol === "wss:";
-      const hostname  = parsed.hostname;
-      const port      = parseInt(parsed.port) || (isWss ? 443 : 80);
-      const path      = (parsed.pathname || "/") + (parsed.search ?? "");
+      const isWss    = parsed.protocol === "wss:";
+      const hostname = parsed.hostname;
+      const port     = parseInt(parsed.port) || (isWss ? 443 : 80);
+      const path     = (parsed.pathname || "/") + (parsed.search ?? "");
 
       // ── Phase 1: connect ──
       emit({ type: "phase", phase: "connect", status: "active" });
@@ -285,7 +332,7 @@ export async function POST(req: NextRequest) {
       });
 
       socket.write(upgradeRequest);
-      const responseRaw = await readHeaders(socket);
+      const { raw: responseRaw, leftover: realLeftover } = await readHeaders(socket);
 
       const statusLine = responseRaw.split("\r\n")[0] ?? "";
       const statusCode = parseInt(statusLine.split(" ")[1] ?? "0");
@@ -303,25 +350,41 @@ export async function POST(req: NextRequest) {
         return;
       }
 
+      // RFC 6455 §4.1 — validate Sec-WebSocket-Accept
+      const acceptMatch = responseRaw.match(/Sec-WebSocket-Accept:\s*(.+)\r\n/i);
+      const serverAccept = acceptMatch?.[1]?.trim() ?? "";
+      if (serverAccept !== accept) {
+        emit({
+          type:    "error",
+          message: serverAccept
+            ? `Sec-WebSocket-Accept mismatch — server sent "${serverAccept}", expected "${accept}" (RFC 6455 §4.1)`
+            : `Server did not send Sec-WebSocket-Accept header (RFC 6455 §4.1)`,
+          raw:     responseRaw,
+        });
+        emit({ type: "done" });
+        socket.destroy();
+        controller.close();
+        return;
+      }
+
       emit({
         type:       "handshake_response",
         raw:        responseRaw,
         statusCode,
         accept,
-        derivation: {
-          key,
-          guid:    WS_GUID,
-          input:   key + WS_GUID,
-          sha1Hex,
-          accept,
-        },
-        elapsedMs: Date.now() - sessionStart,
+        acceptValid: true,
+        derivation: { key, guid: WS_GUID, input: key + WS_GUID, sha1Hex, accept },
+        elapsedMs:  Date.now() - sessionStart,
       });
 
       emit({ type: "phase", phase: "handshake", status: "done" });
-      emit({ type: "connected", elapsedMs: Date.now() - sessionStart });
 
-      socket.destroy();
+      // ── Keep socket alive: create session ──
+      const sessionId = crypto.randomUUID();
+      const realSession = createWsSession(sessionId, socket);
+      if (realLeftover.length > 0) injectData(realSession, realLeftover);
+
+      emit({ type: "connected", sessionId, elapsedMs: Date.now() - sessionStart });
       emit({ type: "done" });
       controller.close();
     },
